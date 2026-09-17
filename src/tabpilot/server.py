@@ -218,11 +218,20 @@ def create_server(config: Config | None = None) -> Server:
 
     @tool
     def activate_tab(tab_id: str | None = None, url_pattern: str | None = None) -> str:
-        """Bring a tab to the front.
+        """Bring a target browser tab to the front and focus its window.
+
+        Side effects: This switches the user's active viewport and window focus
+        to the target tab.
+
+        Usage guidelines: Use this when the user needs to visually inspect the
+        page, or before performing OS-level screen captures. Background actions
+        like `read_tab`, `query_dom`, `eval_js`, `screenshot`, and `fill` do NOT
+        require activating the tab — they work off-screen without interrupting
+        the user's active workflow.
 
         Args:
-            tab_id: Exact tab id.
-            url_pattern: Regex matched against tab URLs.
+            tab_id: Exact tab id (e.g. from `list_tabs`).
+            url_pattern: Regex matched against tab URLs (e.g. 'github\\.com').
         """
         tab = session.resolve(tab_id, url_pattern)
         session.backend.activate_tab(tab.id)
