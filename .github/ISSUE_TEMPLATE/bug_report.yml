@@ -1,0 +1,75 @@
+name: 🐛 Bug Report
+description: Create a report to help us reproduce and fix a defect
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue! Please provide as much context as possible.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: Tell us what went wrong...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor-output
+    attributes:
+      label: Output of `tabpilot doctor`
+      description: Run `tabpilot doctor` in your terminal and paste the full output here.
+      placeholder: |
+        TabPilot doctor
+        Environment
+          ✓ platform: ...
+          ✓ python: ...
+        ...
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Start Chrome with `--remote-debugging-port=9222`
+        2. Run tool `read_tab()` on `https://...`
+        3. See error ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Ubuntu / Debian (Desktop)
+        - Ubuntu / Debian (Headless Server / VPS)
+        - Windows 10/11
+        - Other Linux distribution
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Active Backend
+      options:
+        - CDP (Chrome DevTools Protocol)
+        - AppleScript Fallback (macOS)
+        - Unsure / Auto
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?

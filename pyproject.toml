@@ -10,7 +10,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "Le Phuoc Hung" }]
-keywords = ["mcp", "chrome", "cdp", "automation", "qa", "testing", "headless"]
+keywords = [
+  "mcp", "mcp-server", "model-context-protocol", "chrome",
+  "cdp", "browser-automation", "claude-desktop", "cursor-mcp",
+  "ai-agents", "testing", "headless", "web-automation",
+]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
