@@ -220,18 +220,25 @@ def create_server(config: Config | None = None) -> Server:
     def activate_tab(tab_id: str | None = None, url_pattern: str | None = None) -> str:
         """Bring a target browser tab to the front and focus its window.
 
-        Side effects: This switches the user's active viewport and window focus
-        to the target tab.
+        Side effects: Changes system window focus and switches the user's active
+        tab viewport. Does not reload the page or alter DOM state.
 
-        Usage guidelines: Use this when the user needs to visually inspect the
-        page, or before performing OS-level screen captures. Background actions
-        like `read_tab`, `query_dom`, `eval_js`, `screenshot`, and `fill` do NOT
-        require activating the tab — they work off-screen without interrupting
-        the user's active workflow.
+        Usage guidelines:
+        - When to use: Use when a human user needs to observe the active page,
+          or before capturing desktop-wide OS screenshots and video screencasts.
+        - When NOT to use: Do NOT call this before reading or interacting with tabs.
+          TabPilot tools (`read_tab`, `query_dom`, `click`, `fill`, `eval_js`,
+          `screenshot`) work off-screen in background tabs without stealing focus.
 
         Args:
-            tab_id: Exact tab id (e.g. from `list_tabs`).
-            url_pattern: Regex matched against tab URLs (e.g. 'github\\.com').
+            tab_id: Exact tab identifier (e.g. from `list_tabs`). If omitted,
+                uses the frontmost tab or matches by `url_pattern`.
+            url_pattern: Optional regex pattern matched against tab URLs
+                (e.g. 'github\\.com').
+
+        Returns:
+            Confirmation message containing the activated tab ID and title/URL.
+            Returns an error message if no matching tab is found.
         """
         tab = session.resolve(tab_id, url_pattern)
         session.backend.activate_tab(tab.id)
