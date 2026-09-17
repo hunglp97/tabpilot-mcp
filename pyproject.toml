@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tabpilot-mcp"
-version = "0.1.1"
+version = "0.1.2"
 description = "MCP server that reads and drives a real, logged-in Chrome — cross-platform, Ubuntu-headless first-class."
 readme = "README.md"
 requires-python = ">=3.10"
