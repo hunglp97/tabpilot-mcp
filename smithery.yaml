@@ -1,0 +1,8 @@
+startCommand:
+  type: stdio
+  config:
+    command: uvx
+    args:
+      - "--from"
+      - "git+https://github.com/hunglp97/tabpilot-mcp"
+      - "tabpilot-mcp"
