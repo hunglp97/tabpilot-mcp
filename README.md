@@ -5,7 +5,7 @@
 # 🧭 TabPilot
 
 <p align="center">
-  <strong>The Missing Bridge for AI Browser Automation: Drive your <em>REAL</em>, Logged-in Chrome — with Zero Bot Detection, 90%+ Token Savings, and 24/7 Headless Capabilities.</strong>
+  <strong>Drive the real Chrome you are already logged into — on macOS, Windows, and Headless Ubuntu 24/7.</strong>
 </p>
 
 <p align="center">
@@ -18,40 +18,40 @@
 
 ---
 
-## ⚡ 10-Second TL;DR: What is TabPilot?
+Most browser MCP servers launch a **fresh, blank browser instance**. That works for scraping static pages, but fails completely on tasks that matter:
+- 🚫 **Cloudflare & Bot Shields** immediately flag fresh automation browsers.
+- 🚫 **Corporate SSO, Okta, & 2FA** make authenticating from scratch painful or impossible.
+- 🚫 **Read-only tab viewers** can only *look* at DOM text, not click or fill forms.
 
-Most AI browser agents (Browser-Use, Playwright MCP, Puppeteer) make one fatal assumption: they launch a **fresh, blank browser profile**. That works for public search engines, but completely breaks on the tasks you actually care about:
-- 🚫 **Cloudflare & Bot Shields** immediately block fresh automation browsers.
-- 🚫 **Corporate SSO, Okta, & 2FA** make logging in automatically impossible or fragile.
-- 🚫 **Read-only tab readers** (like AppleScript tools) can only *look* at the screen, not *act* on it.
-
-**TabPilot bridges this divide.** It attaches directly to the **Google Chrome you already have open and logged into**. Your AI agents (Claude, Cursor, Antigravity, Cline) can read pages with up to **99.8% token savings**, click elements with authentic mouse events (`isTrusted: true`), bypass tricky React state caches, solve multi-row survey matrix grids, and capture background screenshots without interrupting your workflow.
+**TabPilot bridges this gap.** It attaches directly to your **existing, logged-in Google Chrome**. Your AI agents (Claude, Cursor, Antigravity, Cline) can read pages with up to **99% token savings**, click elements with authentic mouse events (`isTrusted: true`), defeat React state caching traps, solve multi-row survey grids, and capture background screenshots without stealing window focus.
 
 ```
-+------------------------------------------------------------------------------------+
-|  YOUR DESKTOP OR VPS              TABPILOT ENGINE               YOUR WORKFLOW      |
-|                                                                                    |
-|  [ Real Chrome Browser ] <=====> [ TabPilot MCP ] <===========> [ AI Agents ]     |
-|   - Active Sessions               - Token Budgets                - Claude Desktop  |
-|   - SSO & 2FA Bypassed            - Native Form Setters          - Cursor IDE      |
-|   - Cookies & LocalStorage        - Matrix Grid Engine           - Antigravity     |
-|   - Real Browser Fingerprint      - Dual CDP / AppleScript       - Windsurf / Cline|
-+------------------------------------------------------------------------------------+
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│  YOUR WORKSPACE                     TABPILOT MCP ENGINE           REAL BROWSER    │
+│                                                                                   │
+│  ┌──────────────────────┐          ┌──────────────────────┐      ┌──────────────┐ │
+│  │ AI Agents            │          │ TabPilot MCP Server  │      │ Real Chrome  │ │
+│  │ - Claude Desktop     │  stdio / │ - Token Budget Slicer│ CDP  │ - Active SSO │ │
+│  │ - Cursor IDE         │ ───────> │ - Native Form Setters│────> │ - Cookies    │ │
+│  │ - Antigravity/Gemini │   SSH    │ - Matrix Grid Driver │<──── │ - 2FA Saved  │ │
+│  │ - Cline / Windsurf   │          │ - Dual CDP/AppleScr. │      │ - Real Finger│ │
+│  └──────────────────────┘          └──────────────────────┘      └──────────────┘ │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 Quick Start (Zero Installation Needed)
+## ⚡ Quick Start
 
-### 1. Test your setup in one command
-Run `tabpilot doctor` via `uvx` (no `pip install` required):
+### 1. Test your environment in one command
+Run `tabpilot doctor` via `uvx` (no installation required):
 
 ```bash
 uvx --from git+https://github.com/hunglp97/tabpilot-mcp tabpilot doctor
 ```
 
-### 2. Plug it into your MCP Client
-Add this to your client config (`claude_desktop_config.json`, `.cursor/mcp.json`, etc.):
+### 2. Configure your MCP Client
+Add to `claude_desktop_config.json` or `.cursor/mcp.json`:
 
 ```json
 {
@@ -64,8 +64,8 @@ Add this to your client config (`claude_desktop_config.json`, `.cursor/mcp.json`
 }
 ```
 
-### 3. Launch Chrome with Debugging
-Close all Chrome instances completely, then open your profile with remote debugging enabled:
+### 3. Launch Chrome with Remote Debugging
+Quit Chrome completely, then start it pointing to your persistent automation profile:
 
 ```bash
 # macOS
@@ -80,296 +80,156 @@ taskkill /F /IM chrome.exe
 "C:\Program Files\Google\Chrome\Application\chrome.exe" ^
   --remote-debugging-port=9222 --user-data-dir="%USERPROFILE%\tabpilot-chrome"
 ```
-> *(On macOS without flags, TabPilot seamlessly falls back to AppleScript zero-config mode!)*
+
+> [!IMPORTANT]
+> **🍎 macOS Zero-Config Fallback:**  
+> On macOS, if you do not launch Chrome with debugging flags, TabPilot automatically falls back to AppleScript to drive the Chrome you already have open.  
+> **Prerequisite:** In Google Chrome, go to **View → Developer → check "Allow JavaScript from Apple Events"**.
 
 ---
 
-## 💰 How TabPilot Saves 90%+ Context Tokens
+## 💰 How TabPilot Saves 90%+ Tokens
 
-The default approach taken by naive browser MCPs is dumping `document.body.innerText` or raw HTML into the context window. This incinerates your LLM context budget on boilerplate: navbars, cookie banners, SVGs, and tracking scripts.
+Naive browser automation dumps `document.body.innerText` or raw HTML, wasting 15,000–45,000 tokens on navigation bars, cookies banners, and tracking scripts.
 
-TabPilot features **Progressive Token Slicing**:
+TabPilot provides **Progressive Token Slicing**:
 
-```mermaid
-flowchart TD
-    A[Raw Web Page: ~45,000 Tokens] --> B{What does the Agent need?}
-    
-    B -->|Just checking button / input state| C["query_dom(selector)<br/><b>~18 Tokens (99.9% Saved)</b>"]
-    B -->|Targeted article or card section| D["read_tab(selector)<br/><b>~350 Tokens (98.5% Saved)</b>"]
-    B -->|Full content overview| E["read_tab() with Link-Density Engine<br/><b>~1,200 Tokens (92.0% Saved)</b>"]
-    B -->|Naive dump - eval_js body| F["eval_js('innerText')<br/><b>18,000+ Tokens (Wasteful)</b>"]
-
-    style C fill:#00C49F,stroke:#00856B,stroke-width:2px,color:#fff
-    style D fill:#0088FE,stroke:#0055A5,stroke-width:2px,color:#fff
-    style E fill:#FFBB28,stroke:#B28000,stroke-width:2px,color:#fff
-    style F fill:#FF8042,stroke:#C24000,stroke-width:2px,color:#fff
+```
+Raw Page Dump (eval_js body)  ██████████████████████████████████████ 18,000+ tokens
+read_tab() (Link-Density)     ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ ~1,200 tokens (93% saved)
+read_tab(selector)            █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ ~350 tokens (98% saved)
+query_dom(selector)           ▏                                      ~18 tokens (99.9% saved)
 ```
 
-### Real-World Token Consumption Benchmark
-
-| Method | Tokens Consumed | Context Waste | Best For |
+| Method | Tokens | Savings | Best For |
 | :--- | :---: | :---: | :--- |
-| **`query_dom(selector)`** | **~15 – 30** | **0.1%** | Verifying if submit button is disabled, reading error alerts, checking checkbox states |
-| **`read_tab(selector)`** | **~300 – 600** | **1.8%** | Reading bug descriptions, comments, or isolated forum threads |
-| **`read_tab()`** *(Link-Density Engine)* | **~1,200 – 2,000** | **7.5%** | Reading full pages without nav, ads, headers, footers |
-| ❌ *Traditional `eval_js` innerText* | ~15,000 – 25,000 | 100% | *Context budget incinerator* |
-| ❌ *Raw HTML DOM dump* | 40,000 – 80,000+ | 300%+ | *Causes model hallucinations & limits* |
+| **`query_dom(selector)`** | **~15–30** | **99.9%** | Checking button states (`disabled`), inputs, badges, or alerts |
+| **`read_tab(selector)`** | **~300–600** | **98.0%** | Reading isolated articles, ticket cards, or form sections |
+| **`read_tab()`** *(Link-Density)* | **~1,200–1,800** | **93.0%** | Full-page reads with nav, ads, headers, and footers stripped |
+| ❌ *Naive `eval_js` innerText* | 15,000–35,000 | 0% | *Context budget incinerator* |
 
-> 💡 **Built-in Budget Cap:** TabPilot actively enforces `--max-chars 20000` (configurable). If a read truncates, it explicitly returns `[Truncated at 20000 of 64000 chars - refine with selector]` so your agent can zoom in with zero guessing!
+> 💡 **Enforced Character Budget:** Reads default to `--max-chars 20000`. If truncated, TabPilot alerts the model with exact cut sizes, prompting it to narrow down with `selector` instead of hallucinating.
 
 ---
 
-## 🥊 The Real-World Driving Advantage
+## 🥊 Driving Forms That Fight Back
 
-Modern Web Applications (React, Vue, Angular, Svelte) are deliberately designed in ways that defeat traditional automation scripts. TabPilot solves the 3 most infamous failure modes:
+Modern Single-Page Applications (React, Vue, Svelte) defeat standard automation scripts. TabPilot solves the 3 most infamous SPA traps:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Agent as AI Agent
-    participant TP as TabPilot MCP
-    participant DOM as Chrome DOM / React Virtual DOM
-    
-    Note over Agent,DOM: Case 1: React Synthetic Event Trap
-    Agent->>TP: fill(selector="#email", value="user@domain.com")
-    TP->>DOM: Call native prototype setter (HTMLInputElement.prototype)
-    TP->>DOM: Dispatch both 'input' and 'change' events
-    DOM-->>TP: React internal value tracker triggers state update ✅
-    
-    Note over Agent,DOM: Case 2: Multi-row Matrix / Survey Batching
-    Agent->>TP: fill_matrix(column_index=1)
-    loop Each Row Sequentially
-        TP->>DOM: Synthetic click with deliberate microtask delay (80ms)
-        DOM-->>TP: React commits state individually without batching drops ✅
-    end
-    TP->>DOM: Scan & verify all rows answered
-    TP-->>Agent: "Clicked 28 rows, 0 unanswered remaining" ✅
+```
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│ TRAP 1: React Synthetic Cache                                                     │
+│ Standard `.value = 'x'` is ignored by React's internal tracker.                   │
+│ ✅ TabPilot calls native property setters + fires both `input` and `change`.      │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│ TRAP 2: Multi-Row Survey Grid Batching                                            │
+│ Clicking 25 matrix rows in one JS tick causes React to commit only the last row.  │
+│ ✅ `fill_matrix` clicks row-by-row across microtasks with delays, then confirms.  │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│ TRAP 3: Virtual Portals (React-Select, Headless UI)                               │
+│ No `<select>` exists; options render only after clicking the trigger.             │
+│ ✅ `select_option_ui` clicks trigger, awaits portal mount, and selects option.    │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. The React Synthetic Event Trap
-* **The Problem:** Setting `input.value = 'hello'` updates the DOM property, but React caches the previous value. React sees no change, refuses to trigger state hooks, and form submission fails silently!
-* **TabPilot's Solution:** TabPilot accesses the native descriptor (`Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set`), applies the value, and dispatches native `input` + `change` events.
-
-### 2. Multi-row Matrix & Grid Surveys
-* **The Problem:** In survey tools (Qualtrics, Toluna, SurveyMonkey, Google Forms), clicking 20 radio buttons in a loop causes React to batch state updates, registering only the final click and leaving 19 rows blank.
-* **TabPilot's Solution:** `fill_matrix` clicks row-by-row across separate event loop ticks with a configurable delay (`--matrix-delay-ms 80`), then re-scans the DOM to prove all rows are answered.
-
-### 3. Virtual & Floating Dropdowns (React-Select, Headless UI, Radix)
-* **The Problem:** There is no `<select>` element in the DOM. Options only exist when the trigger is clicked and the menu portal mounts.
-* **TabPilot's Solution:** `select_option_ui` clicks the custom control, waits for the popper/portal element to render, and safely clicks the target option text.
-
-### 4. Background & Off-Screen Tab Screenshots
-* Can take full-height scrolling screenshots (`full_page=True`) or element-focused snaps (`selector=".receipt"`) on tabs **running in the background**, without stealing window focus from your work.
-
 ---
 
-## ⚖️ Feature Comparison Matrix
+## ⚖️ Comparison
 
-| Feature | Browser-Use / Playwright | Read-Only Tab Readers | 🧭 **TabPilot** |
+| Capability | Read-Only Tab Readers | Headless Bots (Puppeteer/Playwright) | 🧭 **TabPilot** |
 | :--- | :---: | :---: | :---: |
-| **Logged-in Sessions (SSO / 2FA / Cookies)** | ❌ New incognito profile | ✅ Real Chrome | ✅ **Real Chrome (Zero re-login)** |
-| **Bypasses Cloudflare / Bot Shields** | ❌ Fingerprinted as bot | ✅ Human fingerprint | ✅ **Human browser fingerprint** |
-| **Interactive Form Driving & Clicking** | ✅ Yes | ❌ Read-only | ✅ **Full bidirectional control** |
-| **React Synthetic Event Fix** | ⚠️ Often fails | ❌ N/A | ✅ **Native prototype setters** |
-| **Matrix Survey Handler** | ❌ Batched click drops | ❌ N/A | ✅ **`fill_matrix` task scheduling** |
-| **Token-Optimized DOM Inspection** | ❌ Raw DOM / Vision | ⚠️ Basic text | ✅ **`query_dom` (18 tokens)** |
-| **Background Tab Screenshots** | ✅ | ❌ Must be active | ✅ **Off-screen CDP captures** |
-| **Headless Ubuntu 24/7 Daemon** | ⚠️ Complex Docker | ❌ macOS only | ✅ **Native systemd stack** |
-| **External Dependencies** | ❌ Node.js, Chromium bins | ❌ macOS osascript | ✅ **Zero deps beyond MCP SDK** |
-| **Fallback on Non-Configured macOS** | ❌ Crashes | ✅ | ✅ **Auto-falls back to AppleScript** |
+| **Uses Existing Sessions & Cookies** | ✅ | ❌ Fresh empty profile | ✅ **Real Chrome (No re-login)** |
+| **Bypasses Cloudflare & Bot Shields** | ✅ Human | ❌ Bot fingerprint | ✅ **Human browser fingerprint** |
+| **Form Driving & Clicking** | ❌ Read-only | ✅ | ✅ **Full Bidirectional Driving** |
+| **React Synthetic Event Fix** | ❌ | ⚠️ Often missed | ✅ **Native prototype setters** |
+| **Survey Matrix Handler** | ❌ | ❌ Batched drops | ✅ **`fill_matrix` task scheduling** |
+| **Token-Optimized Extraction** | ⚠️ Basic text | ❌ Raw DOM / costly vision | ✅ **`query_dom` (18 tokens)** |
+| **Background Tab Screenshots** | ❌ Must be active | ✅ | ✅ **Off-screen CDP captures** |
+| **Headless Ubuntu 24/7 Daemon** | ❌ macOS only | ⚠️ Complex Docker | ✅ **Native systemd stack** |
+| **External Dependencies** | Minimal | ❌ Heavy Node/Playwright binaries | ✅ **Zero dependencies beyond MCP** |
 
 ---
 
-## 🏗️ Technical Architecture
+## 🐧 24/7 Headless Ubuntu Server Stack
 
-TabPilot avoids bulky frameworks. It talks directly to Chrome via a custom-built RFC 6455 WebSocket client implemented purely using Python `socket` from the standard library:
+TabPilot is engineered to run permanently on cloud VPS servers (AWS, Hetzner, DigitalOcean) with zero exposed ports:
 
-```mermaid
-graph LR
-    subgraph Clients["AI Clients"]
-        Claude["Claude Desktop"]
-        Cursor["Cursor IDE"]
-        Antigravity["Antigravity / Gemini"]
-        SSH["Remote SSH Client"]
-    end
-
-    subgraph TabPilot["TabPilot Engine (Zero Dependencies)"]
-        Server["MCP Server (server.py)"]
-        Extract["Extract (Link-Density / query_dom)"]
-        Interact["Interact (fill / fill_matrix / click)"]
-        Evidence["Evidence (Offscreen Screenshots)"]
-        WS["RFC 6455 WebSocket Client (Pure Python)"]
-    end
-
-    subgraph Chrome["Chrome Runtime"]
-        CDP["Chrome DevTools Protocol (127.0.0.1:9222)"]
-        AppleScript["macOS AppleScript Fallback"]
-        Tabs["Logged-In User Tabs (SSO, Cookies, 2FA)"]
-    end
-
-    Clients -->|MCP stdio / SSH pipe| Server
-    Server --> Extract & Interact & Evidence
-    Extract & Interact & Evidence --> WS
-    WS --> CDP
-    Server -.->|Fallback on macOS| AppleScript
-    CDP & AppleScript --> Tabs
+```
+[ Laptop / Client ] ──( Encrypted SSH Pipe )──> [ Remote Ubuntu Server ]
+                                                        │
+                                                        ▼
+                                             [ TabPilot MCP Server ]
+                                                        │ (CDP 127.0.0.1:9222)
+                                                        ▼
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│ Managed Systemd User Stack (Restart=always, Linger Enabled)                       │
+│   tabpilot-xvfb.service   ──>   tabpilot-wm.service   ──>   tabpilot-chrome.service
+│   (Virtual Framebuffer)         (Openbox Window Mgr)        (Real Chrome + SSO)   │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
 
----
-
-## 🐧 24/7 Headless Ubuntu Server Deployment
-
-TabPilot is built from the ground up to run on cloud VPS instances (AWS, Hetzner, DigitalOcean) as a permanent 24/7 headless browser daemon:
-
-```mermaid
-flowchart LR
-    subgraph Laptop["Your Local Machine"]
-        LocalClient["Claude / Cursor MCP"]
-    end
-
-    subgraph Server["Remote Headless Ubuntu Server"]
-        SSHD["SSH Daemon (No open external ports!)"]
-        
-        subgraph Systemd["Managed Systemd Stack"]
-            Xvfb["tabpilot-xvfb<br/>(Virtual Display)"] --> WM["tabpilot-wm<br/>(Openbox WM)"]
-            WM --> Chrome["tabpilot-chrome<br/>(Real Chrome + SSO)"]
-            WM -.-> VNC["tabpilot-vnc<br/>(Localhost VNC)"]
-        end
-        
-        TP["TabPilot CLI (Serve)"]
-    end
-
-    LocalClient -->|Encrypted SSH Stdio Pipe| SSHD
-    SSHD --> TP
-    TP <-->|Loopback CDP :9222| Chrome
-```
-
-### Why this setup is rock-solid:
-1. **One-Command Setup:** `bash deploy/ubuntu/install.sh` configures Xvfb, Openbox, Chrome, and systemd units with `Restart=always`.
-2. **Font Protection (Anti-Tofu):** Headless Ubuntu usually renders Vietnamese, Japanese, and Chinese characters as blank rectangles ("tofu boxes"). `install.sh` installs Noto and Liberation fonts, and `doctor` verifies font rendering.
-3. **Cgroup Memory Caps:** Prevent Chrome from crashing your host:
+1. **One-Command Setup:** `bash deploy/ubuntu/install.sh` configures Xvfb, Openbox, Chrome, and systemd services with `Restart=always`.
+2. **Font Protection (Anti-Tofu):** Headless servers often render Vietnamese and CJK characters as empty square boxes. `install.sh` installs Noto and Liberation fonts; `doctor` validates text rendering.
+3. **Cgroup Memory Caps:** Prevent Chrome from exhausting host RAM:
    ```bash
    tabpilot install-stack --memory-high 4G
    ```
-4. **Zero Open Ports:** Chrome listens strictly on `127.0.0.1`. Remote MCP connections run securely through SSH pipes (`ssh you@server "tabpilot serve"`).
+4. **Zero Remote Attack Surface:** Chrome CDP stays locked to `127.0.0.1`. Remote MCP connections run securely through SSH pipes (`ssh you@server "tabpilot serve"`).
 
 ---
 
-## 🧰 Full Tools & Resources Reference
+## 🧰 Tools & Resources Reference
 
-TabPilot provides **17 specialized tools** and **2 live resources**:
+TabPilot exposes **17 tools** and **2 live resources**:
 
-### 1. 📖 Reading & Inspection Tools
-| Tool Name | Key Parameters | Token Impact | Purpose |
-| :--- | :--- | :---: | :--- |
-| `query_dom` | `selector`, `attrs`, `visible_only` | **~18 tokens** | Atomic inspection of buttons, form states (`disabled`, `checked`), and labels. |
-| `read_tab` | `selector`, `mode`, `max_chars`, `url_pattern` | **~350–1200** | Extracts clean markdown using link-density algorithms. Strips nav/footers. |
-| `list_tabs` | `url_pattern` | Low | Lists all open tabs with IDs, titles, and URLs. |
-| `eval_js` | `expression`, `timeout_ms` | Variable | Runs arbitrary JS in tab; automatically awaits Promises in CDP. |
+### 🔍 Reading & DOM Inspection
+- **`query_dom(selector, attrs, limit, visible_only)`**: Atomic element inspection (~18 tokens). Checks disabled, checked, values.
+- **`read_tab(selector, mode, max_chars, url_pattern)`**: Link-density markdown extraction with token caps.
+- **`list_tabs(url_pattern)`**: Lists open tabs with IDs, titles, and URLs (regex filterable).
+- **`eval_js(expression, timeout_ms)`**: Runs arbitrary JS in tab context; automatically awaits Promises in CDP.
 
-### 2. 🧭 Navigation & Tab Management
-| Tool Name | Key Parameters | Purpose |
-| :--- | :--- | :--- |
-| `open_tab` | `url`, `activate`, `wait_for_load` | Opens URL in a new tab, awaiting complete page rendering. |
-| `close_tab` | `url_pattern`, `tab_id` | Closes tab and polls until the process confirms destruction. |
-| `navigate` | `url`, `wait_for_load` | Points existing tab to a new URL. |
-| `activate_tab` | `url_pattern`, `tab_id` | Brings target tab into foreground focus. |
+### 🧭 Navigation & Tabs
+- **`open_tab(url, activate, wait_for_load)`**: Opens a URL in a new tab, awaiting page completion.
+- **`close_tab(url_pattern, tab_id)`**: Closes tab and polls until process confirms destruction.
+- **`navigate(url, wait_for_load)`**: Points tab to a new URL and awaits document load.
+- **`activate_tab(url_pattern, tab_id)`**: Brings target tab to foreground focus.
 
-### 3. 🖱️ Interaction & Complex Form Driving
-| Tool Name | Key Parameters | Purpose |
-| :--- | :--- | :--- |
-| `click` | `selector`, `text`, `nth` | Scrolls element into viewport and fires authentic `isTrusted: true` mouse clicks. |
-| `fill` | `selector`, `value`, `press_enter` | Bypasses React state cache by calling native prototype setter. |
-| `select_option` | `selector`, `values`, `by` | Selects items in standard HTML `<select>` or Select2 widgets. |
-| `select_option_ui` | `control_selector`, `option_text` | Clicks trigger, waits for popup portal, and chooses React-Select / Headless UI items. |
-| `wait_for` | `selector`, `state`, `text`, `timeout_ms`| Polls for element state (`visible`, `hidden`, `text`, `enabled`). |
+### 🖱️ Interaction & Complex Forms
+- **`click(selector, text, nth)`**: Scrolls element into view and emits trusted mouse event (`isTrusted: true`).
+- **`fill(selector, value, clear, press_enter)`**: Sets form inputs via native prototype setters to trigger React/Vue.
+- **`select_option(selector, values, by)`**: Selects options in native `<select>` or Select2 dropdowns.
+- **`select_option_ui(control_selector, option_text)`**: Clicks trigger, waits for popup portal, and selects item.
+- **`wait_for(selector, state, text, timeout_ms)`**: Polls until condition holds (`visible`, `hidden`, `text`, `enabled`).
 
-### 4. 📊 Matrix Surveys & Evidence
-| Tool Name | Key Parameters | Purpose |
-| :--- | :--- | :--- |
-| `scan_matrix` | `selector` | Discovers multi-row grid questions and flags unanswered items. |
-| `fill_matrix` | `column_index`, `rows`, `delay_ms` | Answers grids row-by-row with microtask delays to defeat React batching. |
-| `screenshot` | `full_page`, `selector`, `label` | Offscreen capture of any tab (local file path or inline base64 image). |
-| `browser_status` | *None* | Reports backend status, capabilities, and open tabs count. |
+### 📋 Matrix Surveys & Evidence
+- **`scan_matrix(selector)`**: Discovers multi-row grid questions and flags unanswered rows.
+- **`fill_matrix(column_index, rows, delay_ms)`**: Answers matrix rows sequentially with task delays.
+- **`screenshot(full_page, selector, label)`**: Offscreen capture of any tab (local path or inline base64).
+- **`browser_status()`**: Reports active backend, capabilities, CDP endpoint, and open tab count.
 
 ### 📦 Live MCP Resources
-* `tab://active` — Real-time markdown stream of the active tab.
-* `tab://{tab_id}` — Real-time markdown stream of any specific tab.
-
----
-
-## 🎯 Real-World Scenarios
-
-### Scenario 1: Automated QA Bug Reporting on Test IO / Jira
-> **Agent Prompt:** *"Open the active bug submission tab on Test IO, fill in the issue title, select severity as 'Critical' using the custom dropdown, and attach a screenshot."*
-* TabPilot resolves the tab via `url_pattern=r"tester\.test\.io/tests/\w+/bugs"` without guessing tab IDs.
-* Fills input fields cleanly through React setters.
-* Uses `select_option_ui` to handle the floating custom dropdown.
-* Captures a full-page screenshot and returns the file path.
-
-### Scenario 2: 30-Row Matrix Survey Auto-Completion
-> **Agent Prompt:** *"Fill the rating grid question on the current page, choosing column 2 for all questions."*
-* Standard agents click 30 buttons instantly; React commits only the last one.
-* TabPilot's `fill_matrix(column_index=1)` scans the 30 rows, clicks them with 80ms delays, re-scans the DOM, and reports `clicked: 30 | still unanswered: 0`.
-
-### Scenario 3: Investigating Dashboards Behind Okta SSO
-> **Agent Prompt:** *"Check our AWS CloudWatch dashboard to see if error rate spiked in the last 15 minutes."*
-* No credentials or API keys needed: your Chrome session is already authenticated.
-* The agent reads the dashboard table using `read_tab(selector="#metrics-table")` in only ~400 tokens!
-
----
-
-## 🩺 The `tabpilot doctor` Diagnostic
-
-Never wonder why automation failed. Run `tabpilot doctor`:
-
-```text
-TabPilot doctor
-
-Environment
-  ✓ platform: Darwin 25.6.0 (arm64)
-  ✓ python: 3.14.3
-
-Chrome
-  ✓ chrome binary: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-  ✓ chrome version: Google Chrome 152.0.7977.83
-
-Transport
-  ✓ cdp 127.0.0.1:9222: Chrome/152.0.7977.83
-
-Browser
-  ✓ backend selected: cdp (capabilities: activate, eval, navigate, open_close, screenshot, trusted_input)
-  ✓ tabs: 2 open
-  ✓ javascript round-trip: 1 + 1 returned 2
-
-Evidence
-  ✓ screenshot dir: /Users/username/.tabpilot/screenshots
-
-All systems operational.
-```
-
-If something is misconfigured, `doctor` gives you the exact command to copy-paste and fix it!
+- `tab://active` — Markdown stream of the currently focused tab.
+- `tab://{tab_id}` — Markdown stream of any specific tab by ID.
 
 ---
 
 ## 🛠️ CLI Reference
 
 ```bash
-tabpilot doctor                # Diagnose environment, Chrome, fonts, and CDP ports
-tabpilot tabs                  # List open tabs directly in terminal
-tabpilot serve                 # Run MCP server on stdio
+tabpilot doctor                # Run diagnostic suite (Chrome, CDP, fonts, permissions)
+tabpilot tabs                  # List open browser tabs in terminal
+tabpilot serve                 # Start MCP server on stdio
 
-# Linux Headless Stack Commands
+# Linux Managed Stack Commands
 tabpilot install-stack         # Install systemd user services
-tabpilot up                    # Start headless Xvfb + Openbox + Chrome
-tabpilot down                  # Stop the headless stack
-tabpilot status                # Check systemd status
-tabpilot logs chrome -f        # Tail Chrome's stdout/stderr
+tabpilot up / tabpilot down    # Start or stop the headless stack
+tabpilot status                # Check systemd stack status
+tabpilot logs chrome -f        # Follow live Chrome logs
 ```
 
 ---
 
-## 🧪 Development & Testing
+## 🧪 Testing
 
 ```bash
 git clone https://github.com/hunglp97/tabpilot-mcp.git
@@ -378,23 +238,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Run pure unit tests (zero browser requirement)
+# Unit tests (Zero browser needed)
 pytest -v
 
-# Run live CDP integration tests
+# Live integration tests (against Chrome on port 9222)
 pytest -v -m live
 ```
-
----
-
-## 🤝 Contributing
-
-We welcome contributions! Whether adding WebDriver BiDi support, optimizing JavaScript extraction heuristics, or writing integrations:
-
-1. Fork the project.
-2. Create your branch: `git checkout -b feat/my-improvement`.
-3. Verify test coverage: `pytest`.
-4. Submit a Pull Request.
 
 ---
 
