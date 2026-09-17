@@ -9,6 +9,8 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/tabpilot-mcp/"><img src="https://img.shields.io/pypi/v/tabpilot-mcp.svg?color=blue" alt="PyPI Version"></a>
+  <a href="https://pypi.org/project/tabpilot-mcp/"><img src="https://img.shields.io/pypi/dm/tabpilot-mcp" alt="PyPI Downloads"></a>
   <a href="https://github.com/hunglp97/tabpilot-mcp/actions/workflows/ci.yml"><img src="https://github.com/hunglp97/tabpilot-mcp/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
   <a href="https://glama.ai/mcp/servers/hunglp97/tabpilot-mcp"><img src="https://glama.ai/mcp/servers/hunglp97/tabpilot-mcp/badges/score.svg" alt="tabpilot-mcp MCP server – quality and maintenance score on Glama"></a>
   <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-Standard%20Compatible-00C49F.svg" alt="MCP Compatible"></a>
@@ -54,8 +56,10 @@ Most browser MCP servers launch a **fresh, blank browser instance**. That works 
 Run `tabpilot doctor` via `uvx` (no installation required):
 
 ```bash
-uvx --from git+https://github.com/hunglp97/tabpilot-mcp tabpilot doctor
+uvx tabpilot-mcp doctor
 ```
+
+*(Or install via pip: `pip install tabpilot-mcp`)*
 
 ### 2. Configure your MCP Client
 Add to `claude_desktop_config.json` or `.cursor/mcp.json`:
@@ -65,7 +69,7 @@ Add to `claude_desktop_config.json` or `.cursor/mcp.json`:
   "mcpServers": {
     "tabpilot": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/hunglp97/tabpilot-mcp", "tabpilot-mcp"]
+      "args": ["tabpilot-mcp"]
     }
   }
 }
