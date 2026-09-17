@@ -31,7 +31,9 @@ tabpilot = "tabpilot.cli:main"
 tabpilot-mcp = "tabpilot.cli:main_serve"
 
 [project.urls]
-Homepage = "https://github.com/lephuochung/tabpilot-mcp"
+Homepage = "https://github.com/hunglp97/tabpilot-mcp"
+Repository = "https://github.com/hunglp97/tabpilot-mcp"
+Issues = "https://github.com/hunglp97/tabpilot-mcp/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tabpilot"]
