@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TabPilot fixture</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; }
+    nav, footer, aside { background: #eee; padding: 8px; }
+    .radio_button { display: inline-block; width: 22px; height: 22px;
+                    border: 2px solid #888; border-radius: 50%; margin: 0 14px; cursor: pointer; }
+    .radio_button.selected { background: #2a7; border-color: #2a7; }
+    .RowWrapper { padding: 6px 0; }
+    #hidden-box { display: none; }
+    #late { display: none; }
+  </style>
+</head>
+<body>
+  <nav>Home · Bugs · Settings · Profile · Logout</nav>
+  <header><h2>Boilerplate header that readable mode should drop</h2></header>
+
+  <main>
+    <article>
+      <h1>Checkout fails on Safari 17</h1>
+      <p>The payment step returns a <strong>500</strong> when the cart holds more than
+         nine items. Reproduced on <em>three</em> devices.</p>
+      <ul><li>Add ten items</li><li>Open checkout</li><li>Observe the error</li></ul>
+      <p>See the <a href="/steps">full steps</a>.</p>
+      <table>
+        <tr><th>Device</th><th>Result</th></tr>
+        <tr><td>iPhone 15</td><td>fails</td></tr>
+        <tr><td>Pixel 8</td><td>passes</td></tr>
+      </table>
+    </article>
+
+    <form id="report">
+      <input id="title" type="text" placeholder="Bug title">
+      <textarea id="desc" placeholder="Describe it"></textarea>
+      <select id="os" multiple>
+        <option value="ios">iOS</option>
+        <option value="android">Android</option>
+        <option value="web">Web</option>
+      </select>
+      <input id="agree" type="checkbox">
+      <button id="submit" type="button">Send report</button>
+      <button id="locked" type="button" disabled>Locked</button>
+      <div id="result"></div>
+      <div id="hidden-box">invisible</div>
+      <div id="late">appeared late</div>
+    </form>
+
+    <div class="matrix_question" id="q1">
+      <h3>Rate each area</h3>
+      <div class="RowWrapper"><span>Speed</span>
+        <i class="radio_button"></i><i class="radio_button"></i><i class="radio_button"></i></div>
+      <div class="RowWrapper"><span>Clarity</span>
+        <i class="radio_button"></i><i class="radio_button"></i><i class="radio_button"></i></div>
+      <div class="RowWrapper"><span>Support</span>
+        <i class="radio_button"></i><i class="radio_button"></i><i class="radio_button"></i></div>
+      <div class="RowWrapper"><span>Value</span>
+        <i class="radio_button"></i><i class="radio_button"></i><i class="radio_button"></i></div>
+      <div class="RowWrapper"><span>Design</span>
+        <i class="radio_button"></i><i class="radio_button"></i><i class="radio_button"></i></div>
+    </div>
+  </main>
+
+  <aside>Related links nobody asked for</aside>
+  <footer>Copyright boilerplate</footer>
+
+  <script>
+    // A custom radio whose state lives in a class name, not in an <input>.
+    // This is what survey platforms actually ship, and why isAnswered() cannot
+    // rely on input.checked alone.
+    document.querySelectorAll('.RowWrapper').forEach(function (row) {
+      row.querySelectorAll('.radio_button').forEach(function (cell) {
+        cell.addEventListener('click', function () {
+          row.querySelectorAll('.radio_button').forEach(function (other) {
+            other.classList.remove('selected');
+          });
+          cell.classList.add('selected');
+        });
+      });
+    });
+
+    document.getElementById('submit').addEventListener('click', function () {
+      document.getElementById('result').textContent =
+        'sent:' + document.getElementById('title').value;
+      setTimeout(function () {
+        document.getElementById('late').style.display = 'block';
+      }, 400);
+    });
+
+    // Record whether events arrived as real user input, so the live test can
+    // assert that CDP clicks are trusted and DOM-dispatched ones are not.
+    window.__trust = [];
+    document.getElementById('submit').addEventListener('click', function (e) {
+      window.__trust.push(e.isTrusted);
+    });
+    window.__inputEvents = 0;
+    document.getElementById('title').addEventListener('input', function () { window.__inputEvents++; });
+    window.__changeEvents = 0;
+    document.getElementById('title').addEventListener('change', function () { window.__changeEvents++; });
+  </script>
+</body>
+</html>
