@@ -74,6 +74,11 @@ _CHROME = """\
 Description=TabPilot Chrome (CDP on 127.0.0.1)
 After=tabpilot-wm.service
 Requires=tabpilot-wm.service
+# StartLimit* are Unit-level directives. Put under the service section they are
+# ignored, and systemd mentions it only in the journal, so the backoff looks
+# configured while doing nothing.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 EnvironmentFile={env_file}
@@ -93,9 +98,11 @@ ExecStart=/bin/sh -c 'DISPLAY="$TABPILOT_DISPLAY" exec "$TABPILOT_CHROME_BIN" \\
   "$TABPILOT_START_URL"'
 Restart=always
 RestartSec=5
-# Chrome that crash-loops should back off rather than hammer the machine.
-StartLimitIntervalSec=120
-StartLimitBurst=5
+# Chrome shares this host with whatever else runs on it. MemoryHigh throttles by
+# applying reclaim pressure rather than inviting the OOM killer, so a runaway
+# browser slows down instead of dying mid-workflow -- and its neighbours keep
+# their memory. Empty means no limit.
+MemoryHigh={memory_high}
 
 [Install]
 WantedBy=default.target
@@ -126,6 +133,21 @@ TEMPLATES = {
     "tabpilot-chrome": _CHROME,
     "tabpilot-vnc": _VNC,
 }
+
+
+def render_unit(name: str, *, env_file: "Path | str | None" = None, memory_high: str = "") -> str:
+    """Render one unit file.
+
+    Every caller goes through here, production and tests alike, so adding a
+    field to a template cannot leave one of them formatting with a stale set of
+    keys.
+    """
+    template = TEMPLATES[name]
+    fields: dict[str, object] = {"env_file": env_file if env_file is not None else ENV_FILE}
+    if "{memory_high}" in template:
+        # "infinity" is systemd's own spelling for no limit.
+        fields["memory_high"] = memory_high or "infinity"
+    return template.format(**fields)
 
 
 def _require_systemd() -> None:
@@ -196,7 +218,8 @@ def render_env(config: Config, *, vnc_insecure: bool = False, start_url: str = "
 
 
 def install(config: Config, *, vnc_insecure: bool = False, start_url: str = "about:blank",
-            screen: str = "1920x1080x24", extra_flags: str = "", enable: bool = True) -> str:
+            screen: str = "1920x1080x24", extra_flags: str = "", enable: bool = True,
+            memory_high: str = "") -> str:
     """Write the env file and unit files, reload systemd, and enable the units."""
     _require_systemd()
 
@@ -211,9 +234,9 @@ def install(config: Config, *, vnc_insecure: bool = False, start_url: str = "abo
     ENV_FILE.chmod(0o600)
 
     written = []
-    for name, template in TEMPLATES.items():
+    for name in TEMPLATES:
         path = UNIT_DIR / f"{name}.service"
-        path.write_text(template.format(env_file=ENV_FILE), encoding="utf-8")
+        path.write_text(render_unit(name, memory_high=memory_high), encoding="utf-8")
         written.append(path)
 
     _systemctl("daemon-reload")
@@ -243,16 +266,22 @@ def install(config: Config, *, vnc_insecure: bool = False, start_url: str = "abo
     return "\n".join(lines)
 
 
-def up(config: Config, *, restart: bool = False) -> str:
-    """Start (or restart) the stack."""
+def up(config: Config, *, restart: bool = False, with_vnc: bool = True) -> str:
+    """Start (or restart) the stack.
+
+    ``with_vnc=False`` brings up Chrome and its display without VNC, which is
+    what a host wants when nobody needs to sign in to sites by hand — and what a
+    non-interactive install has to do, since there is no password to prompt for.
+    """
     _require_systemd()
     if not (UNIT_DIR / "tabpilot-chrome.service").exists():
         raise TabPilotError(
             "The managed stack is not installed yet.",
             remedy="tabpilot install-stack    # then: tabpilot up",
         )
+    units = LEAF_UNITS if with_vnc else tuple(u for u in LEAF_UNITS if u != "tabpilot-vnc")
     action = "restart" if restart else "start"
-    _systemctl(action, *[f"{name}.service" for name in LEAF_UNITS])
+    _systemctl(action, *[f"{name}.service" for name in units])
     return f"{action.capitalize()}ed the stack.\n\n{status(config)}"
 
 

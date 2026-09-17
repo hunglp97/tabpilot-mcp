@@ -176,16 +176,6 @@ def check_screenshots(config: Config) -> list[Check]:
 def check_linux_display(config: Config) -> list[Check]:
     checks: list[Check] = []
 
-    display = os.environ.get("DISPLAY")
-    if display:
-        checks.append(Check("DISPLAY", OK, display))
-    else:
-        checks.append(Check(
-            "DISPLAY", WARN, "unset",
-            f"Headless Chrome works without it, but the managed stack expects {config.display}.\n"
-            f"  export DISPLAY={config.display}",
-        ))
-
     xvfb = _process_running(f"Xvfb {config.display}")
     checks.append(Check(
         "Xvfb", OK if xvfb else WARN,
@@ -193,11 +183,30 @@ def check_linux_display(config: Config) -> list[Check]:
         "tabpilot up    # or: systemctl --user start tabpilot-chrome.service",
     ))
 
+    # Each unit sets DISPLAY on its own ExecStart, so an SSH shell without one is
+    # normal and says nothing about whether the stack is healthy. Warning about
+    # it while Xvfb is clearly up sends someone chasing a non-problem.
+    display = os.environ.get("DISPLAY")
+    if display:
+        checks.append(Check("DISPLAY", OK, display))
+    elif xvfb:
+        checks.append(Check(
+            "DISPLAY", OK,
+            f"unset in this shell, which is fine \u2014 the units set {config.display} themselves",
+        ))
+    else:
+        checks.append(Check(
+            "DISPLAY", WARN, "unset, and no virtual display is running",
+            f"Start the managed stack, or export it by hand:\n  export DISPLAY={config.display}",
+        ))
+
     vnc = _process_running(f"x11vnc.*{config.vnc_port}")
     checks.append(Check(
         "x11vnc", OK if vnc else WARN,
         f"listening on {config.vnc_port}" if vnc else f"nothing on {config.vnc_port}",
-        "Only needed to log into sites by hand. Start it with: tabpilot up",
+        "Only needed to sign in to sites by hand. Set a password once, then start it:\n"
+        "  mkdir -p ~/.vnc && x11vnc -storepasswd ~/.vnc/passwd\n"
+        "  tabpilot install-stack && tabpilot up",
     ))
 
     if vnc:

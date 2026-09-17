@@ -87,6 +87,10 @@ tabpilot up --restart    # after editing ~/.config/tabpilot/stack.env
 tabpilot doctor          # diagnose anything that broke
 ```
 
+Sharing the host with something that must not be starved? Cap Chrome at install
+time with `tabpilot install-stack --memory-high 4G` — reclaim pressure, not the
+OOM killer, so a runaway browser slows down instead of dying.
+
 Then point your MCP client at it over SSH — no port opened, screenshots streamed back inline:
 
 ```json

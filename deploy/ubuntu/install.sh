@@ -114,21 +114,53 @@ esac
 
 # ---------------------------------------------------------------------------
 if [ "$WITH_VNC" -eq 1 ] && [ "$VNC_INSECURE" -eq 0 ] && [ ! -f "$HOME/.vnc/passwd" ]; then
-  say "Setting a VNC password"
-  echo "    VNC gives full control of a browser holding your live logins, so it is"
-  echo "    bound to loopback and password-protected. Choose a password now."
-  mkdir -p "$HOME/.vnc"
-  x11vnc -storepasswd "$HOME/.vnc/passwd"
+  if [ -t 0 ]; then
+    say "Setting a VNC password"
+    echo "    VNC gives full control of a browser holding your live logins, so it is"
+    echo "    bound to loopback and password-protected. Choose a password now."
+    mkdir -p "$HOME/.vnc"
+    x11vnc -storepasswd "$HOME/.vnc/passwd"
+  else
+    # This script is meant to be runnable over SSH, and an interactive password
+    # prompt there does not fail -- it hangs with no output, which is worse.
+    warn "No terminal attached, so the VNC password cannot be set interactively.
+    Continuing without VNC. Chrome and the CDP port will come up normally.
+
+    To add VNC later (needed only to sign in to sites by hand), run ON THE SERVER:
+      mkdir -p ~/.vnc && x11vnc -storepasswd ~/.vnc/passwd
+      tabpilot install-stack && tabpilot up"
+    WITH_VNC=0
+  fi
 fi
 
 # ---------------------------------------------------------------------------
 say "Installing systemd units"
 INSTALL_ARGS=(--screen "$SCREEN" --start-url "$START_URL")
-[ "$VNC_INSECURE" -eq 1 ] && INSTALL_ARGS+=(--vnc-insecure)
+if [ "$VNC_INSECURE" -eq 1 ] || [ "$WITH_VNC" -eq 0 ]; then
+  # With no VNC wanted there is no password to point at, so the unit is still
+  # written (for later) but the env file needs a value it can render.
+  INSTALL_ARGS+=(--vnc-insecure)
+fi
 "$TABPILOT" install-stack "${INSTALL_ARGS[@]}"
 
 say "Starting the stack"
-"$TABPILOT" up
+if [ "$WITH_VNC" -eq 1 ]; then
+  "$TABPILOT" up
+else
+  "$TABPILOT" up --no-vnc
+fi
+
+say "Waiting for Chrome to bind the debugging port"
+# `systemctl start` returns as soon as the process is forked; Chrome needs a few
+# seconds more to open the port. Running doctor immediately reports a failure
+# that resolves itself, which is worse than no report at all.
+for _ in $(seq 1 30); do
+  if curl -s -o /dev/null "http://127.0.0.1:${CDP_PORT:-9222}/json/version"; then
+    echo "    CDP is up."
+    break
+  fi
+  sleep 1
+done
 
 say "Checking the result"
 "$TABPILOT" doctor || true

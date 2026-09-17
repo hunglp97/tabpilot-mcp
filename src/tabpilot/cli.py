@@ -52,10 +52,17 @@ examples:
         help="run VNC with no password. Anyone who reaches the port controls your logged-in browser.",
     )
     install.add_argument("--no-enable", action="store_true", help="write the units but do not enable them")
+    install.add_argument(
+        "--memory-high", default="",
+        help="throttle Chrome above this much memory, e.g. 4G. Useful when the host runs "
+             "something else that must not be starved. Unset means no limit.",
+    )
 
     up = subparsers.add_parser("up", help="start the managed stack (Linux)")
     add_common_args(up)
     up.add_argument("--restart", action="store_true", help="restart instead of start")
+    up.add_argument("--no-vnc", action="store_true",
+                    help="start Chrome and its display without VNC")
 
     down = subparsers.add_parser("down", help="stop the managed stack (Linux)")
     add_common_args(down)
@@ -112,11 +119,12 @@ def main(argv: list[str] | None = None) -> int:
                 screen=args.screen,
                 extra_flags=args.extra_flags,
                 enable=not args.no_enable,
+                memory_high=args.memory_high,
             ))
             return 0
 
         if command == "up":
-            print(systemd.up(config, restart=args.restart))
+            print(systemd.up(config, restart=args.restart, with_vnc=not args.no_vnc))
             return 0
 
         if command == "down":

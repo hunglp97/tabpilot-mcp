@@ -5,6 +5,7 @@ These run on any OS — they check what gets written, not that systemd accepts i
 
 from __future__ import annotations
 
+import configparser
 import re
 
 import pytest
@@ -12,6 +13,14 @@ import pytest
 from tabpilot import systemd
 from tabpilot.config import Config
 from tabpilot.errors import TabPilotError
+
+
+def _parse_unit(name: str) -> dict[str, dict[str, str]]:
+    """Parse a rendered unit file the way systemd's own INI reader would."""
+    parser = configparser.ConfigParser(strict=False, interpolation=None)
+    parser.optionxform = str.lower
+    parser.read_string(systemd.render_unit(name, env_file="/tmp/stack.env"))
+    return {section: dict(parser[section]) for section in parser.sections()}
 
 
 @pytest.fixture
@@ -32,10 +41,19 @@ class TestUnitTemplates:
         assert set(systemd.TEMPLATES) == set(systemd.UNITS)
 
     def test_every_unit_formats_with_an_env_file(self):
-        for name, template in systemd.TEMPLATES.items():
-            rendered = template.format(env_file="/home/u/.config/tabpilot/stack.env")
+        for name in systemd.TEMPLATES:
+            rendered = systemd.render_unit(name, env_file="/home/u/.config/tabpilot/stack.env")
             assert "EnvironmentFile=/home/u/.config/tabpilot/stack.env" in rendered, name
-            assert "{" not in rendered.replace("${", "").replace("{", "", 0) or True
+
+    def test_no_template_placeholder_is_left_unfilled(self):
+        """An unrendered `{field}` reaches systemd as a literal and the unit is
+        rejected at daemon-reload."""
+        import re
+
+        for name in systemd.TEMPLATES:
+            rendered = systemd.render_unit(name)
+            leftover = re.findall(r"\{[a-z_]+\}", rendered)
+            assert not leftover, f"{name}: {leftover}"
 
     def test_the_ordering_chain_is_declared(self):
         """Chrome starting before Xvfb exists is the failure this prevents."""
@@ -53,6 +71,23 @@ class TestUnitTemplates:
     def test_chrome_crash_loops_back_off(self):
         template = systemd.TEMPLATES["tabpilot-chrome"]
         assert "StartLimitIntervalSec" in template and "StartLimitBurst" in template
+
+    def test_start_limit_directives_sit_in_the_unit_section(self):
+        """systemd ignores StartLimit* under [Service] and only mentions it in the
+        journal, so the backoff appears configured while doing nothing."""
+        for name in systemd.TEMPLATES:
+            sections = _parse_unit(name)
+            for key in ("StartLimitIntervalSec", "StartLimitBurst"):
+                if any(key.lower() in section for section in sections.values()):
+                    assert key.lower() in sections["Unit"], f"{name}: {key} is not under [Unit]"
+
+    def test_every_unit_is_well_formed_ini(self):
+        """A malformed unit is rejected at daemon-reload with a terse message."""
+        for name in systemd.TEMPLATES:
+            sections = _parse_unit(name)
+            assert "Unit" in sections, name
+            assert "Service" in sections, name
+            assert "execstart" in sections["Service"], name
 
     def test_the_wm_waits_for_the_display_instead_of_sleeping(self):
         """A fixed sleep is a race that fails exactly when the machine is busy."""
@@ -168,3 +203,30 @@ def test_everything_refuses_cleanly_without_systemd(config, monkeypatch):
     monkeypatch.setattr(systemd.shutil, "which", lambda _: None)
     with pytest.raises(TabPilotError, match="systemctl is not available"):
         systemd.up(config)
+
+
+class TestMemoryHigh:
+    """Chrome usually shares its host. MemoryHigh throttles rather than killing,
+    so a runaway browser slows down instead of dying mid-workflow."""
+
+    def test_no_limit_renders_as_systemds_own_spelling(self, config, fake_home, monkeypatch, tmp_path):
+        monkeypatch.setattr(systemd, "UNIT_DIR", tmp_path / "units")
+        monkeypatch.setattr(systemd, "ENV_FILE", tmp_path / "stack.env")
+        monkeypatch.setattr(systemd, "ENV_DIR", tmp_path)
+        monkeypatch.setattr(systemd, "_systemctl", lambda *a, **k: None)
+        monkeypatch.setattr(systemd.shutil, "which", lambda name: None if name == "loginctl" else "/bin/true")
+        systemd.install(config, vnc_insecure=True, enable=False)
+        unit = (tmp_path / "units" / "tabpilot-chrome.service").read_text()
+        assert "MemoryHigh=infinity" in unit
+
+    def test_a_limit_is_applied_to_chrome_only(self, config, fake_home, monkeypatch, tmp_path):
+        monkeypatch.setattr(systemd, "UNIT_DIR", tmp_path / "units")
+        monkeypatch.setattr(systemd, "ENV_FILE", tmp_path / "stack.env")
+        monkeypatch.setattr(systemd, "ENV_DIR", tmp_path)
+        monkeypatch.setattr(systemd, "_systemctl", lambda *a, **k: None)
+        monkeypatch.setattr(systemd.shutil, "which", lambda name: None if name == "loginctl" else "/bin/true")
+        systemd.install(config, vnc_insecure=True, enable=False, memory_high="4G")
+        units = tmp_path / "units"
+        assert "MemoryHigh=4G" in (units / "tabpilot-chrome.service").read_text()
+        for other in ("tabpilot-xvfb", "tabpilot-wm", "tabpilot-vnc"):
+            assert "MemoryHigh" not in (units / f"{other}.service").read_text()

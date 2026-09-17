@@ -16,7 +16,9 @@ git clone https://github.com/lephuochung/tabpilot-mcp && cd tabpilot-mcp
 bash deploy/ubuntu/install.sh
 ```
 
-One command, idempotent, safe to re-run. It installs:
+One command, idempotent, safe to re-run — including over SSH, where it skips the
+VNC password prompt rather than hanging on a prompt nobody can answer. It
+installs:
 
 | Piece | Why |
 |:--|:--|
@@ -75,6 +77,7 @@ tabpilot-xvfb.service   →   tabpilot-wm.service   →   tabpilot-chrome.servic
 
 ```bash
 tabpilot up                   # start (systemd pulls in the dependencies)
+tabpilot up --no-vnc          # Chrome and its display, without VNC
 tabpilot up --restart         # after editing the env file
 tabpilot down                 # stop, leaves first
 tabpilot status               # what is running
@@ -114,7 +117,22 @@ Units fix all four, and `journalctl --user -u tabpilot-chrome` keeps the history
 appears to hang, and the log says nothing useful: it is waiting on
 gnome-keyring, which is not there.
 
-`--no-sandbox` is deliberately **not** in that list. If you run the stack as
+### Sharing the host with something else
+
+Chrome is happy to use every spare gigabyte. If the host also runs something
+that must not be starved, cap it at install time:
+
+```bash
+tabpilot install-stack --memory-high 4G
+```
+
+That is `MemoryHigh`, not `MemoryMax`: above the threshold the kernel applies
+reclaim pressure instead of inviting the OOM killer, so a runaway Chrome slows
+down rather than dying in the middle of a workflow. Leave it unset for no limit.
+
+### `--no-sandbox`
+
+`--no-sandbox` is deliberately **not** in the flag list above. If you run the stack as
 root, Chrome's sandbox refuses to start and you will be tempted to add it —
 adding it removes a real security boundary around a browser holding your live
 sessions. Run the stack as an unprivileged user instead. `doctor` warns when you
@@ -137,6 +155,14 @@ Then point any VNC client at `localhost:5901`. On macOS, Finder → **Cmd+K** �
 
 Sign in to what you need, then just close the viewer. Chrome keeps running, and
 the sessions persist in the profile.
+
+If the install ran over SSH it will have skipped VNC, since there was no
+terminal to set a password on. Add it on the server when you need it:
+
+```bash
+mkdir -p ~/.vnc && x11vnc -storepasswd ~/.vnc/passwd
+tabpilot install-stack && tabpilot up
+```
 
 ### Why VNC is locked down by default
 
