@@ -10,10 +10,17 @@
 
 <p align="center">
   <a href="https://github.com/hunglp97/tabpilot-mcp/actions/workflows/ci.yml"><img src="https://github.com/hunglp97/tabpilot-mcp/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
+  <a href="https://glama.ai/mcp/servers/hunglp97/tabpilot-mcp"><img src="https://glama.ai/mcp/servers/hunglp97/tabpilot-mcp/badges/score.svg" alt="tabpilot-mcp MCP server – quality and maintenance score on Glama"></a>
   <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-Standard%20Compatible-00C49F.svg" alt="MCP Compatible"></a>
   <a href="https://www.python.org"><img src="https://img.shields.io/badge/Python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-3776AB" alt="Python Versions"></a>
   <a href="https://github.com/hunglp97/tabpilot-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
   <a href="https://github.com/hunglp97/tabpilot-mcp/stargazers"><img src="https://img.shields.io/github/stars/hunglp97/tabpilot-mcp?style=social" alt="GitHub Stars"></a>
+</p>
+
+<p align="center">
+  <a href="https://glama.ai/mcp/servers/hunglp97/tabpilot-mcp">
+    <img src="https://glama.ai/mcp/servers/hunglp97/tabpilot-mcp/badges/card.svg" alt="tabpilot-mcp MCP server – quality and maintenance score on Glama">
+  </a>
 </p>
 
 ---
