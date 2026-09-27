@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -128,7 +129,7 @@ class AgentVisionSolver(CaptchaSolverAdapter):
             image_width=int(crop_rect.get("width", 400)),
             image_height=int(crop_rect.get("height", 400)),
             crop_rect=crop_rect,
-            viewport_rect=crop_rect,
+            viewport_rect=layout.get("viewport_rect") or crop_rect,
             allowed_actions=allowed_actions,
             tiles=layout.get("tiles", []),
             controls=layout.get("controls", []),
@@ -189,20 +190,68 @@ class AgentVisionSolver(CaptchaSolverAdapter):
             )
 
         solve_session.actions_used += 1
-        crop = obs.crop_rect or {"x": 0, "y": 0, "width": 800, "height": 600}
-        crop_x = float(crop.get("x", 0))
-        crop_y = float(crop.get("y", 0))
-        crop_w = float(crop.get("width", 800))
-        crop_h = float(crop.get("height", 600))
+        v_rect = obs.viewport_rect or obs.crop_rect or {"x": 0, "y": 0, "width": 800, "height": 600}
+        crop_x = float(v_rect.get("x", 0))
+        crop_y = float(v_rect.get("y", 0))
+        crop_w = float(v_rect.get("width", 800))
+        crop_h = float(v_rect.get("height", 600))
+
+        # --- Pre-action staleness & document lifecycle validation ---
+        kind = action.kind
+        if kind in (ActionKind.CLICK_POINT.value, ActionKind.DRAG.value):
+            if action.image_id and action.image_id != obs.image_id:
+                return SolveResult(
+                    status=SolveStatus.STALE_OBSERVATION.value,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    detail=f"Image ID mismatch (expected {obs.image_id!r}, got {action.image_id!r}). New observation required.",
+                )
+
+        # Check if document has changed or candidate widget is missing before dispatching input
+        doc_check_expr = f"""(function() {{
+            var wRef = {json.dumps(solve_session.candidate.widget_ref)};
+            var el = wRef ? document.querySelector(wRef) : null;
+            if (!el) el = document.querySelector('.recaptcha-challenge, .g-recaptcha, .cf-turnstile, .captcha-box, .captcha-slider, #grid');
+            return {{
+                doc_id: window.__tabpilot_doc_id || null,
+                widget_found: Boolean(el)
+            }};
+        }})()"""
+        try:
+            doc_state = session.backend.eval_js(tab.id, doc_check_expr, timeout_s=3.0)
+            if isinstance(doc_state, dict):
+                if not doc_state.get("widget_found"):
+                    return SolveResult(
+                        status=SolveStatus.STALE_OBSERVATION.value,
+                        solve_id=solve_session.solve_id,
+                        candidate_id=solve_session.candidate.candidate_id,
+                        solver=self.name,
+                        detail="Challenge widget is no longer present in DOM. New observation required.",
+                    )
+                current_doc_id = doc_state.get("doc_id")
+                if current_doc_id and solve_session.document_generation and current_doc_id != solve_session.document_generation:
+                    return SolveResult(
+                        status=SolveStatus.STALE_OBSERVATION.value,
+                        solve_id=solve_session.solve_id,
+                        candidate_id=solve_session.candidate.candidate_id,
+                        solver=self.name,
+                        detail="Document navigated to a new page. Previous observation is stale.",
+                    )
+        except Exception:
+            pass
 
         # --- Dispatch action ---
-        kind = action.kind
         if kind == ActionKind.SELECT_TILE.value:
             target_id = action.target_id
+            if obs.tiles:
+                allowed_tile_ids = {t.get("tile_id") for t in obs.tiles if t.get("tile_id")}
+                if target_id not in allowed_tile_ids:
+                    raise ValueError(f"Tile target_id {target_id!r} is not in observation tiles {list(allowed_tile_ids)}")
             expr = f"""(function() {{
-                var t = document.getElementById({repr(target_id)});
-                if (!t && {repr(target_id or '')}.startsWith('tile-')) {{
-                    var idx = parseInt({repr(target_id or '')}.split('-')[1]);
+                var t = document.getElementById({json.dumps(target_id)});
+                if (!t && {json.dumps(target_id or '')}.startsWith('tile-')) {{
+                    var idx = parseInt({json.dumps(target_id or '')}.split('-')[1]);
                     var all = document.querySelectorAll('.rc-image-tile-target, .captcha-tile, .grid-tile');
                     if (all[idx]) t = all[idx];
                 }}
@@ -242,9 +291,30 @@ class AgentVisionSolver(CaptchaSolverAdapter):
             px = float(action.point["x"])
             py = float(action.point["y"])
             if not (0.0 <= px <= 1.0 and 0.0 <= py <= 1.0):
-                raise ValueError(f"point coordinates must be in [0, 1], got ({px}, {py})")
-            click_x = crop_x + px * crop_w
-            click_y = crop_y + py * crop_h
+                raise ValueError(f"point coordinates must be normalized in [0, 1], got ({px}, {py})")
+
+            # Resolve live viewport position
+            live_expr = f"""(function() {{
+                var wRef = {json.dumps(solve_session.candidate.widget_ref)};
+                var el = wRef ? document.querySelector(wRef) : null;
+                if (!el) el = document.querySelector('.recaptcha-challenge, .captcha-box, #grid, .captcha-container');
+                if (el) {{
+                    var r = el.getBoundingClientRect();
+                    return {{ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }};
+                }}
+                return null;
+            }})()"""
+            live_rect = session.backend.eval_js(tab.id, live_expr, timeout_s=3.0)
+            if isinstance(live_rect, dict) and "x" in live_rect:
+                vp_x = float(live_rect["x"])
+                vp_y = float(live_rect["y"])
+                vp_w = float(live_rect["width"])
+                vp_h = float(live_rect["height"])
+            else:
+                vp_x, vp_y, vp_w, vp_h = crop_x, crop_y, crop_w, crop_h
+
+            click_x = vp_x + px * vp_w
+            click_y = vp_y + py * vp_h
             session.backend.click_at(tab.id, click_x, click_y, timeout_s=5.0)
             time.sleep(0.3)
 
@@ -253,27 +323,49 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 raise ValueError("type_answer requires 'text'")
             field_ref = solve_session.candidate.response_field_ref
             expr = f"""(function() {{
-                var input = document.querySelector({repr(field_ref or 'input[type="text"]')});
-                if (!input) input = document.querySelector('input:not([type="hidden"])');
+                var ref = {json.dumps(field_ref)};
+                var input = ref ? document.querySelector(ref) : null;
+                if (!input) {{
+                    var wRef = {json.dumps(solve_session.candidate.widget_ref)};
+                    var root = wRef ? document.querySelector(wRef) : null;
+                    var container = root ? (root.closest('.captcha-box, .challenge-section, .captcha-container') || root) : null;
+                    if (container) input = container.querySelector('input[type="text"], input:not([type="hidden"])');
+                }}
+                if (!input) input = document.querySelector('.captcha-box input, #captcha-input, #answer');
                 if (input) {{
                     input.scrollIntoView({{ block: 'center', behavior: 'instant' }});
                     input.focus();
-                    input.value = {repr(action.text)};
+                    input.value = {json.dumps(action.text)};
                     input.dispatchEvent(new Event('input', {{ bubbles: true }}));
                     input.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     return true;
                 }}
                 return false;
             }})()"""
-            session.backend.eval_js(tab.id, expr, timeout_s=3.0)
+            found = session.backend.eval_js(tab.id, expr, timeout_s=3.0)
+            if not found:
+                return SolveResult(
+                    status=SolveStatus.UNSUPPORTED.value,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    detail="Could not find input element belonging to this CAPTCHA challenge.",
+                )
             time.sleep(0.3)
 
         elif kind == ActionKind.DRAG.value:
             if not action.point or not action.drag_to:
                 raise ValueError("drag requires 'point' and 'drag_to'")
-            # Scroll candidate into view and get fresh live coordinates
+            fx = float(action.point["x"])
+            fy = float(action.point["y"])
+            tx = float(action.drag_to["x"])
+            ty = float(action.drag_to["y"])
+            if not (0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0 and 0.0 <= tx <= 1.0 and 0.0 <= ty <= 1.0):
+                raise ValueError("drag coordinates must be normalized in [0, 1]")
+
+            # Scroll candidate into view and get fresh live viewport coordinates
             expr = f"""(function() {{
-                var wRef = {repr(solve_session.candidate.widget_ref)};
+                var wRef = {json.dumps(solve_session.candidate.widget_ref)};
                 var el = wRef ? document.querySelector(wRef) : null;
                 if (!el) el = document.querySelector('.captcha-slider, .puzzle-slider, #slider-track, #drag-handle');
                 if (el) {{
@@ -290,20 +382,21 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 crop_w = float(fresh_crop["width"])
                 crop_h = float(fresh_crop["height"])
 
-            from_x = crop_x + float(action.point["x"]) * crop_w
-            from_y = crop_y + float(action.point["y"]) * crop_h
-            to_x = crop_x + float(action.drag_to["x"]) * crop_w
-            to_y = crop_y + float(action.drag_to["y"]) * crop_h
+            from_x = crop_x + fx * crop_w
+            from_y = crop_y + fy * crop_h
+            to_x = crop_x + tx * crop_w
+            to_y = crop_y + ty * crop_h
             session.backend.drag(tab.id, from_x, from_y, to_x, to_y, steps=20, duration_s=0.5, timeout_s=10.0)
             time.sleep(0.5)
 
         elif kind == ActionKind.VERIFY.value:
             expr = f"""(function() {{
-                var wRef = {repr(solve_session.candidate.widget_ref)};
+                var wRef = {json.dumps(solve_session.candidate.widget_ref)};
                 var root = wRef ? document.querySelector(wRef) : null;
-                var container = root ? (root.closest('.challenge-section, form, .captcha-container, .recaptcha-challenge, .captcha-box') || root.parentElement || root) : document;
-                var btn = container.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], input[type="submit"], button[type="submit"], .verify-btn, .btn-verify') ||
-                          document.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], input[type="submit"], button[type="submit"], .verify-btn, .btn-verify');
+                var container = root ? (root.closest('.challenge-section, .captcha-container, .recaptcha-challenge, .captcha-box') || root.parentElement || root) : null;
+                // Specifically look for challenge verify buttons, NEVER generic form submit buttons
+                var btn = (container ? container.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], input[id*="verify"], .verify-btn, .btn-verify, button[aria-label*="Verify"], button[aria-label*="Xác minh"]') : null) ||
+                          document.querySelector('#recaptcha-verify-button, #captcha-verify-btn, .recaptcha-challenge button[id*="verify"], .captcha-box button[id*="verify"]');
                 if (btn) {{
                     btn.scrollIntoView({{ block: 'center', behavior: 'instant' }});
                     var r = btn.getBoundingClientRect();
@@ -321,15 +414,14 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                     click_x = crop_x + cr["x"] + cr["width"] / 2.0
                     click_y = crop_y + cr["y"] + cr["height"] / 2.0
                     session.backend.click_at(tab.id, click_x, click_y, timeout_s=5.0)
-            click_fallback_expr = f"""(function() {{
-                var wRef = {repr(solve_session.candidate.widget_ref)};
-                var root = wRef ? document.querySelector(wRef) : null;
-                var container = root ? (root.closest('.challenge-section, form, .captcha-container, .recaptcha-challenge, .captcha-box') || root.parentElement || root) : document;
-                var btn = container.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], input[type="submit"], button[type="submit"], .verify-btn, .btn-verify') ||
-                          document.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], input[type="submit"], button[type="submit"], .verify-btn, .btn-verify');
-                if (btn) btn.click();
-            }})()"""
-            session.backend.eval_js(tab.id, click_fallback_expr, timeout_s=3.0)
+                else:
+                    return SolveResult(
+                        status=SolveStatus.UNSUPPORTED.value,
+                        solve_id=solve_session.solve_id,
+                        candidate_id=solve_session.candidate.candidate_id,
+                        solver=self.name,
+                        detail="Could not locate Verify control for this challenge widget.",
+                    )
             solve_session.attempts += 1
             time.sleep(1.0)
 
@@ -407,15 +499,22 @@ class AgentVisionSolver(CaptchaSolverAdapter):
         """Inspect the challenge element to extract prompt, bounding box, tiles, and controls."""
         try:
             expr = f"""(function() {{
-                var candidateRect = null;
-                var widgetRef = {repr(solve_session.candidate.widget_ref)};
+                var candidatePageRect = null;
+                var candidateViewportRect = null;
+                var scrollX = window.scrollX || window.pageXOffset || 0;
+                var scrollY = window.scrollY || window.pageYOffset || 0;
+                var widgetRef = {json.dumps(solve_session.candidate.widget_ref)};
                 var specificEl = widgetRef ? document.querySelector(widgetRef) : null;
                 var container = specificEl ? (specificEl.closest('.challenge-section, form, .captcha-container, .recaptcha-challenge, .captcha-box, .captcha-slider') || specificEl) : null;
                 var bframe = document.querySelector('iframe[src*="bframe"], iframe[title*="challenge"], .recaptcha-challenge, .h-captcha-challenge, .captcha-modal, .captcha-container');
                 var el = container || bframe || document.querySelector('.captcha-box, #captcha, [class*="captcha"]');
                 if (el) {{
                     var r = el.getBoundingClientRect();
-                    candidateRect = {{ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }};
+                    candidateViewportRect = {{ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }};
+                    candidatePageRect = {{ x: Math.round(r.left + scrollX), y: Math.round(r.top + scrollY), width: Math.round(r.width), height: Math.round(r.height) }};
+                }} else {{
+                    candidateViewportRect = {{ x: 0, y: 0, width: window.innerWidth || 800, height: window.innerHeight || 600 }};
+                    candidatePageRect = {{ x: Math.round(scrollX), y: Math.round(scrollY), width: window.innerWidth || 800, height: window.innerHeight || 600 }};
                 }}
 
                 // Prompt text
@@ -437,18 +536,18 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                         var tr = tileEls[i].getBoundingClientRect();
                         tiles.push({{
                             tile_id: 'tile-' + i,
-                            rect: {{ x: Math.round(tr.left - (candidateRect ? candidateRect.x : 0)),
-                                    y: Math.round(tr.top - (candidateRect ? candidateRect.y : 0)),
-                                    width: Math.round(tr.width),
-                                    height: Math.round(tr.height) }}
+                            rect: {{ x: Math.round(tr.left - candidateViewportRect.x),
+                                     y: Math.round(tr.top - candidateViewportRect.y),
+                                     width: Math.round(tr.width),
+                                     height: Math.round(tr.height) }}
                         }});
                     }}
-                }} else if (candidateRect && candidateRect.width > 150) {{
+                }} else if (candidateViewportRect && candidateViewportRect.width > 150) {{
                     // Generate synthetic 3x3 tiles relative to container
                     var cols = 3;
                     var rows = 3;
-                    var tw = candidateRect.width / cols;
-                    var th = candidateRect.height / rows;
+                    var tw = candidateViewportRect.width / cols;
+                    var th = candidateViewportRect.height / rows;
                     for (var r = 0; r < rows; r++) {{
                         for (var c = 0; c < cols; c++) {{
                             tiles.push({{
@@ -459,20 +558,21 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                     }}
                 }}
 
-                // Controls
+                // Controls: specifically challenge verify controls only
                 var controls = [];
-                var verifyBtn = (el ? el.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], button[type="submit"], input[type="submit"], .btn-verify, .verify-btn') : null) ||
-                                document.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], button[type="submit"], input[type="submit"], .btn-verify, .verify-btn');
-                if (verifyBtn && candidateRect) {{
+                var verifyBtn = (el ? el.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], input[id*="verify"], .btn-verify, .verify-btn, button[aria-label*="Verify"], button[aria-label*="Xác minh"]') : null) ||
+                                document.querySelector('#recaptcha-verify-button, #captcha-verify-btn, .recaptcha-challenge button[id*="verify"], .captcha-box button[id*="verify"]');
+                if (verifyBtn && candidateViewportRect) {{
                     var vr = verifyBtn.getBoundingClientRect();
                     controls.push({{
                         kind: 'verify',
-                        rect: {{ x: Math.round(vr.left - candidateRect.x), y: Math.round(vr.top - candidateRect.y), width: Math.round(vr.width), height: Math.round(vr.height) }}
+                        rect: {{ x: Math.round(vr.left - candidateViewportRect.x), y: Math.round(vr.top - candidateViewportRect.y), width: Math.round(vr.width), height: Math.round(vr.height) }}
                     }});
                 }}
 
                 return {{
-                    crop_rect: candidateRect,
+                    crop_rect: candidatePageRect,
+                    viewport_rect: candidateViewportRect,
                     prompt: prompt,
                     tiles: tiles,
                     controls: controls,

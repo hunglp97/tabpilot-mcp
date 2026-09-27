@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import json
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -301,8 +302,10 @@ class SolveSession:
     status_detail: str = ""
     verification_level: str = VerificationLevel.NONE.value
 
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    in_flight_actions: dict[str, threading.Event] = field(default_factory=dict)
     evidence: list[dict[str, Any]] = field(default_factory=list)
-    action_receipts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    action_receipts: dict[str, tuple[str, Any]] = field(default_factory=dict)
     baseline_token_fingerprint: str | None = None
     last_observation: Observation | None = None
     last_observation_image_bytes: bytes | None = None

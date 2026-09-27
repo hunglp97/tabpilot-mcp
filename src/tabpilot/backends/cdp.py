@@ -61,6 +61,8 @@ class CDPBackend(Backend):
         self.port = port
         self.timeout_s = timeout_s
         self._sockets: dict[str, WebSocket] = {}
+        self._tab_attached_sessions: dict[str, dict[str, str]] = {}
+        self._session_targets: dict[str, dict[str, Any]] = {}
         self._next_id = 0
         self._lock = threading.RLock()
 
@@ -218,8 +220,27 @@ class CDPBackend(Backend):
 
     def _drop_socket(self, tab_id: str) -> None:
         socket_ = self._sockets.pop(tab_id, None)
-        if socket_ is not None:
+        self._tab_attached_sessions.pop(tab_id, None)
+        if socket_ is not None and hasattr(socket_, "close"):
             socket_.close()
+
+    def _handle_cdp_event(self, tab_id: str, method: str, params: dict[str, Any]) -> None:
+        if method == "Target.attachedToTarget":
+            sess_id = params.get("sessionId")
+            target_info = params.get("targetInfo", {})
+            target_id = target_info.get("targetId")
+            if sess_id and target_id:
+                if tab_id not in self._tab_attached_sessions:
+                    self._tab_attached_sessions[tab_id] = {}
+                self._tab_attached_sessions[tab_id][target_id] = sess_id
+                self._session_targets[sess_id] = target_info
+        elif method == "Target.detachedFromTarget":
+            sess_id = params.get("sessionId")
+            target_id = params.get("targetId")
+            if tab_id in self._tab_attached_sessions and target_id:
+                self._tab_attached_sessions[tab_id].pop(target_id, None)
+            if sess_id:
+                self._session_targets.pop(sess_id, None)
 
     def _command(
         self,
@@ -244,9 +265,22 @@ class CDPBackend(Backend):
                 socket_.send_text(json.dumps(payload))
                 deadline = time.monotonic() + timeout
                 while True:
-                    remaining = max(0.05, deadline - time.monotonic())
+                    now = time.monotonic()
+                    if now >= deadline:
+                        raise TimeoutError_(f"{method} timed out after {timeout:.2f}s")
+                    remaining = min(timeout, max(0.001, deadline - now))
                     socket_.settimeout(remaining)
-                    message = json.loads(socket_.recv_text())
+                    try:
+                        raw = socket_.recv_text()
+                    except (TimeoutError_, Exception) as exc:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError_(f"{method} timed out after {timeout:.2f}s") from exc
+                        raise
+                    message = json.loads(raw)
+                    event_method = message.get("method")
+                    if event_method:
+                        self._handle_cdp_event(tab_id, event_method, message.get("params", {}))
+
                     if message.get("id") != message_id:
                         continue
                     if session_id and message.get("sessionId") != session_id:
@@ -329,15 +363,29 @@ class CDPBackend(Backend):
 
     def list_frames(self, tab_id: str) -> list[FrameRef]:
         self._command(tab_id, "Page.enable", timeout_s=self.timeout_s)
+        try:
+            self._command(
+                tab_id,
+                "Target.setAutoAttach",
+                {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
+                timeout_s=self.timeout_s,
+            )
+        except Exception:
+            pass
+
         tree_result = self._command(tab_id, "Page.getFrameTree", timeout_s=self.timeout_s)
         frame_tree = tree_result.get("frameTree", {})
 
         frames: list[FrameRef] = []
+        root_id: str | None = None
 
         def walk(node: dict[str, Any], parent_id: str | None = None) -> None:
+            nonlocal root_id
             f = node.get("frame", {})
             fid = f.get("id", "")
             if fid:
+                if parent_id is None:
+                    root_id = fid
                 frames.append(
                     FrameRef(
                         tab_id=tab_id,
@@ -353,6 +401,68 @@ class CDPBackend(Backend):
 
         if frame_tree:
             walk(frame_tree, None)
+
+        # Discover OOPIF iframe targets
+        try:
+            targets_res = self._command(tab_id, "Target.getTargets", timeout_s=self.timeout_s)
+            target_infos = targets_res.get("targetInfos", [])
+            for t in target_infos:
+                if t.get("type") == "iframe":
+                    tid = t.get("targetId", "")
+                    sess_id = self._tab_attached_sessions.get(tab_id, {}).get(tid)
+                    if not sess_id:
+                        try:
+                            attach_res = self._command(
+                                tab_id,
+                                "Target.attachToTarget",
+                                {"targetId": tid, "flatten": True},
+                                timeout_s=self.timeout_s,
+                            )
+                            sess_id = attach_res.get("sessionId")
+                            if sess_id:
+                                if tab_id not in self._tab_attached_sessions:
+                                    self._tab_attached_sessions[tab_id] = {}
+                                self._tab_attached_sessions[tab_id][tid] = sess_id
+                                self._session_targets[sess_id] = t
+                        except Exception:
+                            pass
+
+                    t_url = t.get("url", "")
+                    child_frame_id = f"frame_{tid}"
+                    if sess_id:
+                        try:
+                            self._command(tab_id, "Runtime.enable", timeout_s=self.timeout_s, session_id=sess_id)
+                            self._command(tab_id, "Page.enable", timeout_s=self.timeout_s, session_id=sess_id)
+                            c_tree = self._command(tab_id, "Page.getFrameTree", timeout_s=self.timeout_s, session_id=sess_id)
+                            c_frame = c_tree.get("frameTree", {}).get("frame", {})
+                            if c_frame.get("id"):
+                                child_frame_id = c_frame.get("id")
+                            if c_frame.get("url"):
+                                t_url = c_frame.get("url")
+                        except Exception:
+                            pass
+
+                    if not any(f.frame_id == child_frame_id for f in frames):
+                        frames.append(
+                            FrameRef(
+                                tab_id=tab_id,
+                                frame_id=child_frame_id,
+                                target_id=tid,
+                                session_id=sess_id,
+                                name=t.get("title", ""),
+                                url=t_url,
+                                parent_id=root_id,
+                                security_origin=t.get("url", ""),
+                            )
+                        )
+                    else:
+                        for f in frames:
+                            if f.frame_id == child_frame_id:
+                                f.session_id = sess_id
+                                f.target_id = tid
+        except Exception:
+            pass
+
         return frames
 
     def evaluate_in_frame(

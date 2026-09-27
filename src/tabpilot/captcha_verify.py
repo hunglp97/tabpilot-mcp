@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 from typing import Any
@@ -24,7 +25,7 @@ def get_token_from_dom(session: Session, tab: TabInfo, candidate: CaptchaCandida
         return None
     try:
         expr = f"""(function() {{
-            var el = document.querySelector({repr(candidate.response_field_ref)});
+            var el = document.querySelector({json.dumps(candidate.response_field_ref)});
             return el ? (el.value || el.textContent || '') : null;
         }})()"""
         val = session.backend.eval_js(tab.id, expr, timeout_s=3.0)
@@ -34,31 +35,64 @@ def get_token_from_dom(session: Session, tab: TabInfo, candidate: CaptchaCandida
 
 
 def is_widget_ui_passed(session: Session, tab: TabInfo, candidate: CaptchaCandidate) -> bool:
-    """Check if the widget UI explicitly displays a passed state."""
+    """Check if the candidate's widget UI explicitly displays a passed state.
+    
+    Must be strictly scoped to candidate's own widget or container. Never searches
+    global document for generic checkboxes or aria-checked markers.
+    """
     try:
         expr = f"""(function() {{
-            var widgetRef = {repr(candidate.widget_ref)};
-            var root = widgetRef ? document.querySelector(widgetRef) : null;
-            var container = root ? (root.closest('.challenge-section, form, [class*="section"]') || root.closest('.captcha-container, .recaptcha-challenge, .g-recaptcha, .cf-turnstile, .captcha-box, .captcha-slider') || root.parentElement || root) : null;
+            var wRef = {json.dumps(candidate.widget_ref)};
+            var root = wRef ? document.querySelector(wRef) : null;
+            var kind = {json.dumps(candidate.challenge_kind)};
+            var prov = {json.dumps(candidate.provider)};
 
-            if (container) {{
-                if (container.querySelector('.recaptcha-checkbox-checked, [aria-checked="true"]')) return true;
-                if (container.querySelector('.cf-turnstile-passed, .h-captcha-success, .captcha-passed, .slider-passed, .badge-passed')) return true;
-                if (container.classList && (container.classList.contains('cf-turnstile-passed') || container.classList.contains('captcha-passed') || container.classList.contains('recaptcha-checkbox-checked') || container.classList.contains('slider-passed') || container.classList.contains('badge-passed'))) return true;
-                var parentSection = container.closest('.challenge-section, form, [class*="section"]');
-                if (parentSection) {{
-                    if (parentSection.querySelector('.captcha-passed, .badge-passed, .slider-passed, .cf-turnstile-passed')) return true;
+            if (!root) {{
+                if (prov === 'cloudflare' && kind === 'interstitial') {{
+                    var cfStage = document.getElementById('challenge-stage') ||
+                                  document.getElementById('challenge-running') ||
+                                  document.getElementById('cf-challenge-running');
+                    var cfTitle = (document.title || '').indexOf('Just a moment...') !== -1;
+                    return !cfStage && !cfTitle;
                 }}
+                return false;
             }}
 
-            var kind = {repr(candidate.challenge_kind)};
-            var prov = {repr(candidate.provider)};
-            if (prov === 'cloudflare') {{
-                return Boolean(document.querySelector('.cf-turnstile-passed, .cf-turnstile.passed'));
-            }} else if (prov === 'recaptcha' && kind === 'checkbox') {{
-                return Boolean(document.querySelector('.recaptcha-checkbox-checked, [aria-checked="true"]'));
-            }} else if (kind === 'image_grid') {{
-                return Boolean(document.querySelector('.recaptcha-challenge.captcha-passed, #grid-challenge.captcha-passed'));
+            // Check for explicit error or expired state in the widget or its immediate challenge container
+            var scope = root.closest('.challenge-section, .captcha-container') || root.closest('form') || root.closest('.captcha-box') || root;
+            var isExpiredOrError = scope.querySelector('.recaptcha-checkbox-expired, .rc-anchor-error, .rc-anchor-error-msg, .cf-turnstile-error, .cf-turnstile-expired, .h-captcha-error') ||
+                                   (scope.classList && (scope.classList.contains('recaptcha-checkbox-expired') || scope.classList.contains('rc-anchor-error') || scope.classList.contains('cf-turnstile-error')));
+            if (isExpiredOrError) return false;
+
+            // Provider-specific scoped passed check
+            if (prov === 'recaptcha') {{
+                if (kind === 'checkbox') {{
+                    var rcChecked = root.querySelector('#recaptcha-anchor[aria-checked="true"], .recaptcha-checkbox[aria-checked="true"], .recaptcha-checkbox-checked');
+                    if (rcChecked) return true;
+                    if (root.getAttribute('aria-checked') === 'true' && (root.id === 'recaptcha-anchor' || root.classList.contains('recaptcha-checkbox'))) return true;
+                    return false;
+                }} else if (kind === 'image_grid') {{
+                    return root.classList.contains('captcha-passed') || Boolean(root.querySelector('.captcha-passed')) ||
+                           Boolean(scope.querySelector('.captcha-passed'));
+                }}
+            }} else if (prov === 'cloudflare') {{
+                if (kind === 'checkbox') {{
+                    var cfChecked = root.querySelector('.cf-turnstile-passed, [role="checkbox"][aria-checked="true"]');
+                    if (cfChecked) return true;
+                    if (root.classList.contains('cf-turnstile-passed')) return true;
+                    return false;
+                }}
+            }} else if (prov === 'hcaptcha') {{
+                var hChecked = root.querySelector('[aria-checked="true"][id*="checkbox"], .h-captcha-success');
+                if (hChecked) return true;
+                if (root.classList.contains('h-captcha-success')) return true;
+                return false;
+            }} else {{
+                // Custom fixture / challenge
+                if (root.classList.contains('captcha-passed') || root.classList.contains('slider-passed')) return true;
+                if (root.querySelector('.captcha-passed, .slider-passed')) return true;
+                if (scope.classList.contains('captcha-passed') || scope.classList.contains('slider-passed')) return true;
+                if (scope.querySelector('.captcha-passed, .slider-passed, .badge-passed, #text-status.badge-passed, #slider-status.badge-passed')) return true;
             }}
             return false;
         }})()"""
@@ -147,9 +181,16 @@ def verify_access(
         evidence["detail"] = "expected postcondition must contain at least visible_selector or text_contains"
         return False, "Postcondition requires visible_selector or text_contains", evidence
 
-    # Check URL if specified
+    # Check live URL if specified
     if url_pattern:
-        current_url = tab.url
+        try:
+            live_url = session.backend.eval_js(tab.id, "window.location.href", timeout_s=2.0)
+            if isinstance(live_url, str) and (live_url.startswith("http://") or live_url.startswith("https://") or live_url.startswith("about:") or live_url.startswith("file://")):
+                current_url = live_url
+            else:
+                current_url = tab.url
+        except Exception:
+            current_url = tab.url
         if not re.search(url_pattern, current_url):
             evidence["detail"] = f"URL {current_url!r} does not match {url_pattern!r}"
             return False, f"URL does not match {url_pattern}", evidence
@@ -162,10 +203,13 @@ def verify_access(
         return False, "Timeout during access check", evidence
 
     try:
-        # Check visible_selector and text_contains
-        expr = f"""(function() {{
-            var sel = {repr(visible_selector)};
-            var txt = {repr(text_contains)};
+        opts_json = json.dumps({
+            "sel": visible_selector,
+            "txt": text_contains,
+        })
+        expr = f"""(function(opts) {{
+            var sel = opts.sel;
+            var txt = opts.txt;
             if (sel) {{
                 var el = document.querySelector(sel);
                 if (!el) return {{ ok: false, reason: 'selector not found: ' + sel }};
@@ -182,7 +226,7 @@ def verify_access(
                 }}
             }}
             return {{ ok: true }};
-        }})()"""
+        }})({opts_json})"""
 
         res = session.backend.eval_js(tab.id, expr, timeout_s=min(5.0, remaining))
         if not res or not res.get("ok"):

@@ -1,0 +1,115 @@
+# 🛡️ CAPTCHA Handling in TabPilot
+
+TabPilot provides transparent, verifiable, browser-native CAPTCHA handling designed specifically for AI coding and automation agents (Claude Desktop, Cursor, Antigravity, Cline).
+
+Unlike third-party scraping libraries that rely on paid solve farms, token injection, or fingerprint spoofing, TabPilot operates within the **real, user-authenticated browser** via the Chrome DevTools Protocol (CDP). It provides tools for passive resolution, automated checkbox interaction, and interactive agent-vision observation-action loops.
+
+---
+
+## 🧰 Tools Architecture
+
+TabPilot exposes **19 core tools** over MCP stdio:
+- 17 general browser tools: `browser_status`, `list_tabs`, `open_tab`, `close_tab`, `navigate`, `activate_tab`, `read_tab`, `query_dom`, `eval_js`, `click`, `fill`, `select_option`, `select_option_ui`, `scan_matrix`, `fill_matrix`, `wait_for`, `screenshot`.
+- **2 dedicated CAPTCHA tools**: `detect_captcha` and `solve_captcha`.
+
+### 1. `detect_captcha`
+- **Purpose**: Zero-side-effect, non-destructive inspection of the active document and all attached frames (including OOPIFs).
+- **Output**: Returns a structured list of `candidates`, each containing:
+  - `candidate_id`: Deterministic unique identifier (e.g., `cf_0`, `recaptcha_1`).
+  - `provider`: `cloudflare`, `recaptcha`, `hcaptcha`, `custom`.
+  - `challenge_kind`: `checkbox`, `interstitial`, `image_grid`, `image_select`, `image_text`, `slider`.
+  - `confidence`: `high`, `medium`, `low`.
+  - `signals`: Array of detected DOM and iframe signals.
+  - `available_strategies`: List of viable solver strategies (e.g. `["checkbox", "agent_vision"]`).
+  - `frame_ref`, `widget_ref`, `rect_css`: Precise DOM and frame references.
+
+### 2. `solve_captcha`
+- **Purpose**: Stateful, multi-round challenge orchestrator.
+- **Operations**:
+  - `start`: Initiates a solve session, binds lease to tab/candidate, captures baseline token fingerprints, and attempts automated or initial vision observation.
+  - `observe`: Retrieves the latest challenge screenshot and layout without executing any mutation or click.
+  - `act`: Executes a targeted solver action (`select_tile`, `drag`, `type_answer`, `verify`, `refresh`) with atomic deduplication.
+  - `status`: Checks the current state of an in-progress solve session.
+  - `cancel`: Aborts the solve session, releasing tab locks and leases.
+
+---
+
+## 🔄 The Agent-Vision Interaction Loop
+
+When an interactive visual challenge occurs (e.g., tile grid selection, slider puzzle, alphanumeric captcha), TabPilot engages the **Agent-Vision Loop**:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Agent as AI Agent (MCP Client)
+    participant TP as TabPilot Server
+    participant Chrome as Real Chrome (CDP)
+
+    Agent->>TP: solve_captcha(operation="start", strategy="agent_vision")
+    TP->>Chrome: Inspect widget & capture page crop (crop_rect vs viewport_rect)
+    TP-->>Agent: [SolveResult(status="needs_agent"), Image(bytes=...)]
+    
+    rect rgb(240, 248, 255)
+    Note over Agent: Agent analyzes image (e.g. identifies traffic light tiles)
+    Agent->>TP: solve_captcha(operation="act", action={"kind": "select_tile", "target_id": "tile-0"})
+    TP->>Chrome: Pre-action check (doc_id, image_id, tile_id) -> Click tile
+    TP-->>Agent: [SolveResult(status="needs_agent"), Image(bytes=...)]
+    end
+
+    Agent->>TP: solve_captcha(operation="act", action={"kind": "verify"})
+    TP->>Chrome: Click challenge verify button only
+    TP->>Chrome: Verify widget pass & response tokens
+    TP-->>Agent: SolveResult(status="widget_passed", verification_level="widget")
+```
+
+### Action Types (`ActionKind`)
+- `select_tile`: Click a specific grid tile by ID (must match an observed tile in `obs.tiles`).
+- `click_point`: Click normalized coordinates `{"x": [0,1], "y": [0,1]}` within challenge viewport.
+- `drag`: Perform an authentic drag gesture from `point` to `drag_to`.
+- `type_answer`: Fill an alphanumeric text code into the challenge's input field.
+- `verify`: Click the challenge's verify/submit button (strictly scoped to the challenge container; never clicks the business form submit button).
+- `refresh`: Request a new challenge image from the provider widget.
+
+---
+
+## 🔒 Safety Invariants & Reliability Guarantees
+
+TabPilot enforces 11 core reliability invariants (validated in `tests/test_captcha_regressions.py`):
+
+1. **Strict Verify Scoping (F01)**: The `verify` action is strictly scoped to challenge-internal verify controls (`#recaptcha-verify-button`, `#captcha-verify-btn`, `button[aria-label*="Verify"]`). It never falls back to generic `button[type=submit]` or `input[type=submit]` on the document, preventing accidental business form submissions.
+2. **Widget-Scoped Pass Verification (F02)**: Pass detection verifies fresh response tokens or state markers belonging exclusively to the candidate widget. Unrelated checked checkboxes (e.g., newsletter opt-ins) or expired challenge states never produce false passes.
+3. **Pre-Action Staleness Validation (F03, F06)**: Before dispatching input, TabPilot verifies that the document lifecycle ID (`window.__tabpilot_doc_id`) and widget existence match the observation. If `image_id` is supplied, it must match `obs.image_id`. Coordinates distinguish page capture coordinates (`crop_rect`) from client mouse coordinates (`viewport_rect`).
+4. **Guaranteed Image Delivery (F04)**: For `status="needs_agent"`, TabPilot always returns inline image bytes over MCP stdio, regardless of whether `return_images` is configured to `auto`.
+5. **OOPIF Discovery & Routing (F05)**: Enables CDP `Target.setAutoAttach(flatten=True)`, listens to target lifecycle events, and populates `session_id` and `target_id` for cross-origin iframes so code executes inside isolated security domains.
+6. **Atomic Action Deduplication (F07)**: Concurrent requests with identical `action_id` are synchronized via in-flight event locks. Exactly one thread executes the browser action; concurrent callers wait and receive the identical receipt.
+7. **Resumable Active Solve (F08)**: Repeated `start` operations for an active solve candidate return the existing active solve session without re-clicking anchors or duplicating state.
+8. **JSON-Encoded Access Verification (F09)**: Postcondition predicates (`visible_selector`, `text_contains`, `url_regex`) are safely serialized with JSON encoding, avoiding `ReferenceError: None is not defined`.
+9. **Hard Monotonic Deadline Enforcement (F10)**: Every CDP command checks `time.monotonic() >= deadline`, ensuring transport event floods cannot extend execution past the allocated time budget.
+10. **Error Preservation (F11)**: JSError or transport failures during inspection return `status="unverified"` with inspection failure evidence rather than falsely claiming `no_captcha`.
+
+---
+
+## 📊 Provider & Qualification Status
+
+| Provider / Kind | Strategy | Qualification Level | Test Coverage |
+|---|---|---|---|
+| **Turnstile (Simulation)** | `checkbox`, `passive_wait` | **Fully Verified (Local Fixture)** | `tests/test_live_captcha.py::test_live_solve_turnstile_checkbox` |
+| **reCAPTCHA v2 (Simulation)** | `checkbox`, `passive_wait` | **Fully Verified (Local Fixture)** | `tests/test_live_captcha.py::test_live_solve_recaptcha_checkbox` |
+| **Grid Challenge (Simulation)** | `agent_vision` | **Fully Verified (Local Fixture)** | `tests/test_live_captcha.py::test_live_solve_recaptcha_grid` |
+| **Text CAPTCHA (Simulation)** | `agent_vision` (`type_answer`, `verify`) | **Fully Verified (Local Fixture)** | `tests/test_live_captcha.py::test_live_solve_text_captcha` |
+| **Slider Puzzle (Simulation)** | `agent_vision` (`drag`) | **Fully Verified (Local Fixture)** | `tests/test_live_captcha.py::test_live_solve_slider_puzzle` |
+| **Cloudflare Interstitial** | `passive_wait` | **Fully Verified (Local Fixture)** | `tests/test_live_captcha.py::test_live_solve_turnstile_interstitial_wait` |
+| **Real Provider Test-Keys** | `checkbox`, `agent_vision` | **Experimental** | Subject to provider network availability and test key provisioning |
+| **OCR / Audio / CV Solvers** | `image_ocr`, `recaptcha_audio`, `slider_cv` | **Planned (P4)** | Extra dependency placeholders; raises `NotImplementedError` in base install |
+
+> [!NOTE]
+> TabPilot base install has **zero mandatory machine learning dependencies** (pure Python + MCP SDK). Standalone OCR, Audio transcription, and OpenCV template matching are reserved for optional P4 extensions.
+
+---
+
+## 🛡️ Best Practices for AI Agents
+
+1. **Always run `detect_captcha` first**: Before attempting form interactions or logins, inspect the tab for active CAPTCHA candidates.
+2. **Check `candidate.available_strategies`**: Prefer `checkbox` or `passive_wait` for Turnstile/reCAPTCHA anchors; switch to `agent_vision` if the anchor presents a secondary interactive challenge.
+3. **Follow the observation ID**: When calling `act`, always pass the current `observation_id` returned by the previous step to guarantee coordinate and state synchronization.
+4. **Define `expected` access conditions**: Provide postcondition assertions such as `expected={"visible_selector": "#dashboard"}` to automatically verify login success after solving.
