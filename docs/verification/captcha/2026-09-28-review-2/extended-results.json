@@ -1,0 +1,44 @@
+{
+  "browser": "Chrome/154.0.8037.57",
+  "image_changed_same_prompt": {
+    "clicks": 1,
+    "status": "needs_agent"
+  },
+  "text_sibling_false_pass": {
+    "status": "widget_passed",
+    "success": true,
+    "attempts": 0
+  },
+  "interstitial_503_false_pass": {
+    "status": "widget_passed",
+    "success": true
+  },
+  "iframe_captcha_not_discovered": {
+    "child_has_challenge": true,
+    "detection_status": "absent",
+    "candidate_count": 0,
+    "solve_status": "no_captcha"
+  },
+  "same_url_frame_identity": {
+    "dom_frame_count": 2,
+    "returned_count": 1,
+    "names": [
+      "FRAME-TWO"
+    ]
+  },
+  "tile_id_not_widget_scoped": {
+    "status": "needs_agent",
+    "foreign_clicks": 1,
+    "grid_clicks": 0
+  },
+  "refresh_not_widget_scoped": {
+    "status": "needs_agent",
+    "foreign_clicks": 1
+  },
+  "dispatch_after_deadline": {
+    "remaining_at_start_ms": 50,
+    "precheck_timeout_s": 3.0,
+    "clicked_after_deadline": true,
+    "status": "timeout"
+  }
+}

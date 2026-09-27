@@ -1,0 +1,13 @@
+{
+  "event_flood_timeout": {
+    "requested_ms": 10,
+    "elapsed_ms": 10,
+    "raised_timeout_error": true,
+    "prevented_infinite_extension": true
+  },
+  "inspection_error_start": {
+    "status": "unverified",
+    "preserved_failure": true,
+    "detail": "Detection payload execution failed: Payload execution failed: injected inspection failure"
+  }
+}

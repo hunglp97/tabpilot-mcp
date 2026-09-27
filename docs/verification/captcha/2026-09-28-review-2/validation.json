@@ -1,0 +1,25 @@
+{
+  "reviewed_commit": "b3a98c30f9a4467bc9e275b8ca346eafc9a001a8",
+  "python": "3.14.3",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "browser": "Chrome/154.0.8037.57",
+  "offline_suite": {
+    "passed": 207,
+    "deselected": 53,
+    "duration_s": 5.14
+  },
+  "chrome_fixture_live_suite": {
+    "passed": 53,
+    "deselected": 207,
+    "duration_s": 20.44,
+    "log": "live-suite.txt"
+  },
+  "suite_total_passed": 260,
+  "model_vision_acceptance_run": false,
+  "real_provider_qualification_run": false,
+  "implementation_modified_by_review": false,
+  "findings": {
+    "P1": 6,
+    "P2": 1
+  }
+}
