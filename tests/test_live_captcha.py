@@ -347,6 +347,7 @@ def test_live_solve_slider_puzzle(chrome_process, fixture_server):
                 "kind": "drag",
                 "point": {"x": 0.073, "y": 0.5},
                 "drag_to": {"x": 0.573, "y": 0.5},
+                "image_id": res_data["observation"]["image_id"],
             },
         )
         drag_data = json.loads(drag_res[0] if isinstance(drag_res, list) else drag_res)

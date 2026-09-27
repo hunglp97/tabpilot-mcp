@@ -402,64 +402,45 @@ class CDPBackend(Backend):
         if frame_tree:
             walk(frame_tree, None)
 
-        # Discover OOPIF iframe targets
+        # Discover OOPIF iframe targets attached to this tab
         try:
-            targets_res = self._command(tab_id, "Target.getTargets", timeout_s=self.timeout_s)
-            target_infos = targets_res.get("targetInfos", [])
-            for t in target_infos:
-                if t.get("type") == "iframe":
-                    tid = t.get("targetId", "")
-                    sess_id = self._tab_attached_sessions.get(tab_id, {}).get(tid)
-                    if not sess_id:
-                        try:
-                            attach_res = self._command(
-                                tab_id,
-                                "Target.attachToTarget",
-                                {"targetId": tid, "flatten": True},
-                                timeout_s=self.timeout_s,
-                            )
-                            sess_id = attach_res.get("sessionId")
-                            if sess_id:
-                                if tab_id not in self._tab_attached_sessions:
-                                    self._tab_attached_sessions[tab_id] = {}
-                                self._tab_attached_sessions[tab_id][tid] = sess_id
-                                self._session_targets[sess_id] = t
-                        except Exception:
-                            pass
+            attached = dict(self._tab_attached_sessions.get(tab_id, {}))
+            for tid, sess_id in attached.items():
+                target_info = self._session_targets.get(sess_id, {})
+                t_url = target_info.get("url", "")
+                child_frame_id = f"frame_{tid}"
+                if sess_id:
+                    try:
+                        self._command(tab_id, "Runtime.enable", timeout_s=self.timeout_s, session_id=sess_id)
+                        self._command(tab_id, "Page.enable", timeout_s=self.timeout_s, session_id=sess_id)
+                        c_tree = self._command(tab_id, "Page.getFrameTree", timeout_s=self.timeout_s, session_id=sess_id)
+                        c_frame = c_tree.get("frameTree", {}).get("frame", {})
+                        if c_frame.get("id"):
+                            child_frame_id = c_frame.get("id")
+                        if c_frame.get("url"):
+                            t_url = c_frame.get("url")
+                    except Exception:
+                        pass
 
-                    t_url = t.get("url", "")
-                    child_frame_id = f"frame_{tid}"
-                    if sess_id:
-                        try:
-                            self._command(tab_id, "Runtime.enable", timeout_s=self.timeout_s, session_id=sess_id)
-                            self._command(tab_id, "Page.enable", timeout_s=self.timeout_s, session_id=sess_id)
-                            c_tree = self._command(tab_id, "Page.getFrameTree", timeout_s=self.timeout_s, session_id=sess_id)
-                            c_frame = c_tree.get("frameTree", {}).get("frame", {})
-                            if c_frame.get("id"):
-                                child_frame_id = c_frame.get("id")
-                            if c_frame.get("url"):
-                                t_url = c_frame.get("url")
-                        except Exception:
-                            pass
-
-                    if not any(f.frame_id == child_frame_id for f in frames):
-                        frames.append(
-                            FrameRef(
-                                tab_id=tab_id,
-                                frame_id=child_frame_id,
-                                target_id=tid,
-                                session_id=sess_id,
-                                name=t.get("title", ""),
-                                url=t_url,
-                                parent_id=root_id,
-                                security_origin=t.get("url", ""),
-                            )
+                existing = next((f for f in frames if f.frame_id == child_frame_id or (t_url and f.url == t_url)), None)
+                if existing:
+                    existing.session_id = sess_id
+                    existing.target_id = tid
+                    if t_url:
+                        existing.url = t_url
+                else:
+                    frames.append(
+                        FrameRef(
+                            tab_id=tab_id,
+                            frame_id=child_frame_id,
+                            target_id=tid,
+                            session_id=sess_id,
+                            name=target_info.get("title", ""),
+                            url=t_url,
+                            parent_id=root_id,
+                            security_origin=target_info.get("url", ""),
                         )
-                    else:
-                        for f in frames:
-                            if f.frame_id == child_frame_id:
-                                f.session_id = sess_id
-                                f.target_id = tid
+                    )
         except Exception:
             pass
 

@@ -34,11 +34,29 @@ def get_token_from_dom(session: Session, tab: TabInfo, candidate: CaptchaCandida
         return None
 
 
+
+def has_widget_error(session: Session, tab: TabInfo, candidate: CaptchaCandidate) -> bool:
+    """Check if the candidate's widget or container displays an error or expired state."""
+    try:
+        expr = f"""(function() {{
+            var wRef = {json.dumps(candidate.widget_ref)};
+            var root = wRef ? document.querySelector(wRef) : null;
+            if (!root) return false;
+            var scope = root.closest('.challenge-section, .captcha-container, .captcha-box') || root;
+            var isExpiredOrError = scope.querySelector('.recaptcha-checkbox-expired, .rc-anchor-error, .rc-anchor-error-msg, .cf-turnstile-error, .cf-turnstile-expired, .h-captcha-error') ||
+                                   (scope.classList && (scope.classList.contains('recaptcha-checkbox-expired') || scope.classList.contains('rc-anchor-error') || scope.classList.contains('cf-turnstile-error')));
+            return Boolean(isExpiredOrError);
+        }})()"""
+        return bool(session.backend.eval_js(tab.id, expr, timeout_s=3.0))
+    except Exception:
+        return False
+
+
 def is_widget_ui_passed(session: Session, tab: TabInfo, candidate: CaptchaCandidate) -> bool:
     """Check if the candidate's widget UI explicitly displays a passed state.
     
     Must be strictly scoped to candidate's own widget or container. Never searches
-    global document for generic checkboxes or aria-checked markers.
+    global document or enclosing form for generic checkboxes or aria-checked markers.
     """
     try:
         expr = f"""(function() {{
@@ -53,13 +71,22 @@ def is_widget_ui_passed(session: Session, tab: TabInfo, candidate: CaptchaCandid
                                   document.getElementById('challenge-running') ||
                                   document.getElementById('cf-challenge-running');
                     var cfTitle = (document.title || '').indexOf('Just a moment...') !== -1;
-                    return !cfStage && !cfTitle;
+                    var titleLower = (document.title || '').toLowerCase();
+                    var bodyText = document.body ? (document.body.innerText || document.body.textContent || '').toLowerCase() : '';
+                    var isBlockedOrError = titleLower.indexOf('access denied') !== -1 ||
+                                           titleLower.indexOf('attention required') !== -1 ||
+                                           titleLower.indexOf('error') !== -1 ||
+                                           bodyText.indexOf('403 access denied') !== -1 ||
+                                           bodyText.indexOf('access denied') !== -1 ||
+                                           bodyText.indexOf('error 403') !== -1;
+                    if (isBlockedOrError) return false;
+                    return !cfStage && !cfTitle && Boolean(document.body && document.body.children.length > 0);
                 }}
                 return false;
             }}
 
-            // Check for explicit error or expired state in the widget or its immediate challenge container
-            var scope = root.closest('.challenge-section, .captcha-container') || root.closest('form') || root.closest('.captcha-box') || root;
+            // Check for explicit error or expired state in the widget or its immediate container
+            var scope = (kind === 'image_text') ? (root.closest('.captcha-box, .challenge-section') || root) : root;
             var isExpiredOrError = scope.querySelector('.recaptcha-checkbox-expired, .rc-anchor-error, .rc-anchor-error-msg, .cf-turnstile-error, .cf-turnstile-expired, .h-captcha-error') ||
                                    (scope.classList && (scope.classList.contains('recaptcha-checkbox-expired') || scope.classList.contains('rc-anchor-error') || scope.classList.contains('cf-turnstile-error')));
             if (isExpiredOrError) return false;
@@ -72,8 +99,7 @@ def is_widget_ui_passed(session: Session, tab: TabInfo, candidate: CaptchaCandid
                     if (root.getAttribute('aria-checked') === 'true' && (root.id === 'recaptcha-anchor' || root.classList.contains('recaptcha-checkbox'))) return true;
                     return false;
                 }} else if (kind === 'image_grid') {{
-                    return root.classList.contains('captcha-passed') || Boolean(root.querySelector('.captcha-passed')) ||
-                           Boolean(scope.querySelector('.captcha-passed'));
+                    return root.classList.contains('captcha-passed') || Boolean(root.querySelector('.captcha-passed'));
                 }}
             }} else if (prov === 'cloudflare') {{
                 if (kind === 'checkbox') {{
@@ -91,8 +117,10 @@ def is_widget_ui_passed(session: Session, tab: TabInfo, candidate: CaptchaCandid
                 // Custom fixture / challenge
                 if (root.classList.contains('captcha-passed') || root.classList.contains('slider-passed')) return true;
                 if (root.querySelector('.captcha-passed, .slider-passed')) return true;
-                if (scope.classList.contains('captcha-passed') || scope.classList.contains('slider-passed')) return true;
-                if (scope.querySelector('.captcha-passed, .slider-passed, .badge-passed, #text-status.badge-passed, #slider-status.badge-passed')) return true;
+                if (kind === 'image_text') {{
+                    var textContainer = root.closest('form, .challenge-section') || root.closest('.captcha-box') || root;
+                    if (textContainer.querySelector('.captcha-passed, .badge-passed, #text-status.badge-passed')) return true;
+                }}
             }}
             return false;
         }})()"""
@@ -110,8 +138,9 @@ def verify_widget_passed(
     """Strictly verify if the candidate widget has passed in the browser.
 
     A widget is considered passed only if:
-    1. A response token is present and distinct from baseline_fingerprint (for token-based captchas), OR
-    2. The widget UI demonstrates a definitive checked/passed state with no error.
+    1. The widget does NOT show an error/expired state.
+    2. A response token is present and distinct from baseline_fingerprint (for token-based captchas), OR
+    3. The widget UI demonstrates a definitive checked/passed state with no error.
     """
     token = None
     # For image_text, the response_field_ref is typically user input, not a server token
@@ -127,6 +156,11 @@ def verify_widget_passed(
         "token_present": bool(token),
         "token_fingerprint": token_fp,
     }
+
+    # An explicit error or expired state in the widget invalidates any token or UI pass
+    if has_widget_error(session, tab, candidate):
+        evidence["detail"] = "Widget displays error or expired status"
+        return False, "Widget displays error or expired status", evidence
 
     if token:
         if baseline_fingerprint and token_fp == baseline_fingerprint:

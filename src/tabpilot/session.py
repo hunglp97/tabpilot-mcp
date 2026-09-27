@@ -40,6 +40,7 @@ class Session:
         self.config = config
         self._backend: Backend | None = None
         self._active_solves: dict[str, Any] = {}
+        self._completed_solves: dict[str, Any] = {}
         self._solve_local = threading.local()
 
     @property
@@ -55,6 +56,7 @@ class Session:
         means a session survives all three without the client reconnecting.
         """
         self._active_solves.clear()
+        self._completed_solves.clear()
         if self._backend is not None:
             try:
                 self._backend.close()
@@ -71,6 +73,7 @@ class Session:
         existing = self._active_solves.get(tab_id)
         if existing is not None:
             if existing.is_expired:
+                self._completed_solves[existing.solve_id] = existing
                 del self._active_solves[tab_id]
             elif existing.candidate.candidate_id == solve_session.candidate.candidate_id:
                 return existing
@@ -85,6 +88,7 @@ class Session:
     def get_active_solve(self, tab_id: str) -> Any | None:
         solve = self._active_solves.get(tab_id)
         if solve is not None and solve.is_expired:
+            self._completed_solves[solve.solve_id] = solve
             del self._active_solves[tab_id]
             return None
         return solve
@@ -94,6 +98,16 @@ class Session:
         if solve is not None:
             if solve_id is None or solve.solve_id == solve_id:
                 self._active_solves.pop(tab_id, None)
+                self._completed_solves[solve.solve_id] = solve
+                if len(self._completed_solves) > 50:
+                    oldest = next(iter(self._completed_solves))
+                    self._completed_solves.pop(oldest, None)
+
+    def get_solve(self, solve_id: str) -> Any | None:
+        for s in self._active_solves.values():
+            if s.solve_id == solve_id:
+                return s
+        return self._completed_solves.get(solve_id)
 
     def check_mutation_guard(self, tab_id: str) -> None:
         """Raise CaptchaBusyError if an external tool tries to mutate a tab undergoing solve."""

@@ -73,6 +73,45 @@ class CheckboxSolver(CaptchaSolverAdapter):
                 detail=f"Terminated due to {budget_status.value}",
             )
 
+        # If already clicked once, observe must not re-click
+        if solve_session.attempts > 0:
+            from .agent_vision import AgentVisionSolver
+            vision_solver = AgentVisionSolver()
+            expr = """(function() {
+                var bframe = document.querySelector('iframe[src*="bframe"], iframe[title*="challenge"], .recaptcha-challenge, .h-captcha-challenge, .captcha-modal');
+                if (!bframe) return false;
+                var r = bframe.getBoundingClientRect();
+                var style = window.getComputedStyle(bframe);
+                return r.width > 100 && r.height > 100 && style.display !== 'none' && style.visibility !== 'hidden';
+            })()"""
+            has_challenge_modal = False
+            try:
+                has_challenge_modal = bool(session.backend.eval_js(tab.id, expr, timeout_s=2.0))
+            except Exception:
+                pass
+
+            if has_challenge_modal and solve_session.agent_vision:
+                solve_session.candidate.challenge_kind = ChallengeKind.IMAGE_GRID.value
+                solve_session.solver_name = vision_solver.name
+                return vision_solver.solve_step(session, tab, solve_session)
+
+            solve_session.status = SolveStatus.WAITING.value
+            return SolveResult(
+                status=solve_session.status,
+                solve_id=solve_session.solve_id,
+                candidate_id=solve_session.candidate.candidate_id,
+                solver=self.name,
+                attempts=solve_session.attempts,
+                rounds=solve_session.rounds,
+                actions_used=solve_session.actions_used,
+                elapsed_ms=solve_session.elapsed_ms,
+                remaining_ms=solve_session.remaining_ms,
+                evidence=solve_session.evidence,
+                detail="Waiting for widget to update or challenge to present",
+                next_action="observe",
+                retry_after_ms=800,
+            )
+
         # Locate click target: prefer live bounding rect after scrollIntoView
         w_ref = solve_session.candidate.widget_ref
         try:

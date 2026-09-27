@@ -70,7 +70,19 @@ class FakeBackend(Backend):
         name = payloads.payload_name(expression)
         self.calls.append((name or "raw", expression if name is None else None))
         if name is None:
-            return self.responses.get("raw", None)
+            if "isExpiredOrError" in expression and "aria-checked" not in expression:
+                return self.responses.get("widget_error", False)
+            raw = self.responses.get("raw", None)
+            if raw is None:
+                if "__tabpilot_doc_id" in expression:
+                    if not hasattr(self, "_fake_doc_id"):
+                        self._fake_doc_id = "doc_fake_123"
+                    if "widget_found" in expression:
+                        return {"doc_id": self._fake_doc_id, "widget_found": True, "prompt": ""}
+                    return self._fake_doc_id
+                if "widget_found" in expression:
+                    return {"doc_id": getattr(self, "_fake_doc_id", "doc_fake_123"), "widget_found": True, "prompt": ""}
+            return raw
 
         programmed = self.responses.get(name)
         if programmed is None:

@@ -1,0 +1,72 @@
+{
+  "browser": "Chrome/154.0.8037.57",
+  "F08_sequential_start": {
+    "same_id": true
+  },
+  "F02_newsletter_baseline": {
+    "status": "waiting",
+    "success": false
+  },
+  "F09_selector_only": {
+    "verified": true,
+    "detail": "Access verified successfully"
+  },
+  "F01_cross_widget_verify": {
+    "submit_count": 0,
+    "status": "unsupported"
+  },
+  "F03_new_document_same_selector": {
+    "document_id_before_action": null,
+    "clicks": 0,
+    "status": "stale_observation"
+  },
+  "F03_changed_challenge": {
+    "clicks": 0,
+    "status": "stale_observation"
+  },
+  "F02_sibling_pass": {
+    "status": "needs_agent",
+    "success": false,
+    "attempts": 0
+  },
+  "F02_interstitial_error_page": {
+    "status": "waiting",
+    "success": false
+  },
+  "F02_fresh_token_with_error": {
+    "passed": false,
+    "detail": "Widget displays error or expired status"
+  },
+  "F06_crop_input_mismatch": {
+    "verify_clicks": 1,
+    "canvas_clicks": 0,
+    "status": "needs_agent"
+  },
+  "F05_cross_tab_frame_leak": {
+    "children_returned_for_A": [
+      {
+        "url_path": "childA",
+        "value": "FRAME-A"
+      }
+    ],
+    "has_foreign_B": false
+  },
+  "F07_unknown_outcome_replay": {
+    "click_count": 1,
+    "exceptions": [
+      "JSError",
+      "ActionOutcomeUnknownError"
+    ]
+  },
+  "F10_solve_deadline": {
+    "requested_ms": 50,
+    "elapsed_ms": 151,
+    "capture_timeout_s": 0.049,
+    "status": "timeout",
+    "remaining_ms": 0
+  },
+  "invalid_strategy_leaves_lease": {
+    "error": "StrategyIncompatibleError",
+    "active_lease": false
+  }
+}

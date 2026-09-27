@@ -90,8 +90,9 @@ class AgentVisionSolver(CaptchaSolverAdapter):
         layout = self._inspect_challenge_layout(session, tab, solve_session)
         crop_rect = layout.get("crop_rect")
 
-        # Capture screenshot of challenge area
-        screenshot_timeout = max(3.0, min(15.0, solve_session.remaining_ms / 1000.0))
+        # Capture screenshot of challenge area within remaining deadline budget
+        rem_s = solve_session.remaining_ms / 1000.0
+        screenshot_timeout = min(15.0, max(0.001, rem_s))
         try:
             image_bytes = session.backend.screenshot(
                 tab.id,
@@ -99,14 +100,48 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 image_format="png",
                 timeout_s=screenshot_timeout,
             )
-        except Exception as exc:
+        except Exception:
+            if solve_session.is_expired:
+                solve_session.status = SolveStatus.TIMEOUT.value
+                return SolveResult(
+                    status=solve_session.status,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    attempts=solve_session.attempts,
+                    rounds=solve_session.rounds,
+                    actions_used=solve_session.actions_used,
+                    elapsed_ms=solve_session.elapsed_ms,
+                    remaining_ms=solve_session.remaining_ms,
+                    evidence=solve_session.evidence,
+                    detail="Screenshot capture timed out: deadline exceeded",
+                )
             # Fall back to full viewport screenshot
+            fallback_timeout = min(15.0, max(0.001, solve_session.remaining_ms / 1000.0))
             image_bytes = session.backend.screenshot(
                 tab.id,
                 image_format="png",
-                timeout_s=screenshot_timeout,
+                timeout_s=fallback_timeout,
             )
             crop_rect = {"x": 0, "y": 0, "width": 800, "height": 600}
+
+        # Check budget again after screenshot / layout I/O
+        budget_status = solve_session.check_budgets()
+        if budget_status:
+            solve_session.status = budget_status.value
+            return SolveResult(
+                status=solve_session.status,
+                solve_id=solve_session.solve_id,
+                candidate_id=solve_session.candidate.candidate_id,
+                solver=self.name,
+                attempts=solve_session.attempts,
+                rounds=solve_session.rounds,
+                actions_used=solve_session.actions_used,
+                elapsed_ms=solve_session.elapsed_ms,
+                remaining_ms=solve_session.remaining_ms,
+                evidence=solve_session.evidence,
+                detail=f"Budget limit reached: {budget_status.value}",
+            )
 
         obs_id = f"obs_{solve_session.solve_id}_{solve_session.rounds}_{int(time.time() * 1000)}"
         img_id = f"img_{solve_session.rounds}"
@@ -199,47 +234,76 @@ class AgentVisionSolver(CaptchaSolverAdapter):
         # --- Pre-action staleness & document lifecycle validation ---
         kind = action.kind
         if kind in (ActionKind.CLICK_POINT.value, ActionKind.DRAG.value):
-            if action.image_id and action.image_id != obs.image_id:
+            if not action.image_id or action.image_id != obs.image_id:
                 return SolveResult(
                     status=SolveStatus.STALE_OBSERVATION.value,
                     solve_id=solve_session.solve_id,
                     candidate_id=solve_session.candidate.candidate_id,
                     solver=self.name,
-                    detail=f"Image ID mismatch (expected {obs.image_id!r}, got {action.image_id!r}). New observation required.",
+                    detail=f"Image ID mismatch or missing (expected {obs.image_id!r}, got {action.image_id!r}). New observation required.",
                 )
 
-        # Check if document has changed or candidate widget is missing before dispatching input
+        # Check if document has changed, prompt changed, or candidate widget is missing before dispatching input
         doc_check_expr = f"""(function() {{
             var wRef = {json.dumps(solve_session.candidate.widget_ref)};
-            var el = wRef ? document.querySelector(wRef) : null;
-            if (!el) el = document.querySelector('.recaptcha-challenge, .g-recaptcha, .cf-turnstile, .captcha-box, .captcha-slider, #grid');
+            var specificEl = wRef ? document.querySelector(wRef) : null;
+            var container = specificEl ? (specificEl.closest('.challenge-section, form, .captcha-container, .recaptcha-challenge, .captcha-box, .captcha-slider') || specificEl) : null;
+            var el = container || document.querySelector('.recaptcha-challenge, .g-recaptcha, .cf-turnstile, .captcha-box, .captcha-slider, #grid') || specificEl;
+
+            var promptEl = (el ? el.querySelector('.rc-imageselect-desc-no-canonical, .rc-imageselect-instructions, .prompt-text, .challenge-instructions, .captcha-prompt, label[for*="captcha"], h3, strong') : null) ||
+                           document.querySelector('.rc-imageselect-desc-no-canonical, .rc-imageselect-instructions, .prompt-text, .challenge-instructions, .captcha-prompt, label[for*="captcha"], h3, strong');
+            var prompt = promptEl ? (promptEl.innerText || promptEl.textContent || '').trim() : '';
+
             return {{
                 doc_id: window.__tabpilot_doc_id || null,
-                widget_found: Boolean(el)
+                widget_found: Boolean(el),
+                prompt: prompt
             }};
         }})()"""
         try:
             doc_state = session.backend.eval_js(tab.id, doc_check_expr, timeout_s=3.0)
-            if isinstance(doc_state, dict):
-                if not doc_state.get("widget_found"):
-                    return SolveResult(
-                        status=SolveStatus.STALE_OBSERVATION.value,
-                        solve_id=solve_session.solve_id,
-                        candidate_id=solve_session.candidate.candidate_id,
-                        solver=self.name,
-                        detail="Challenge widget is no longer present in DOM. New observation required.",
-                    )
-                current_doc_id = doc_state.get("doc_id")
-                if current_doc_id and solve_session.document_generation and current_doc_id != solve_session.document_generation:
-                    return SolveResult(
-                        status=SolveStatus.STALE_OBSERVATION.value,
-                        solve_id=solve_session.solve_id,
-                        candidate_id=solve_session.candidate.candidate_id,
-                        solver=self.name,
-                        detail="Document navigated to a new page. Previous observation is stale.",
-                    )
-        except Exception:
-            pass
+            if not isinstance(doc_state, dict):
+                return SolveResult(
+                    status=SolveStatus.STALE_OBSERVATION.value,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    detail="Failed to query document state. Observation considered stale.",
+                )
+            if not doc_state.get("widget_found"):
+                return SolveResult(
+                    status=SolveStatus.STALE_OBSERVATION.value,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    detail="Challenge widget is no longer present in DOM. New observation required.",
+                )
+            current_doc_id = doc_state.get("doc_id")
+            if solve_session.document_generation and current_doc_id != solve_session.document_generation:
+                return SolveResult(
+                    status=SolveStatus.STALE_OBSERVATION.value,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    detail="Document navigated to a new page or lifecycle identity changed. Previous observation is stale.",
+                )
+            current_prompt = doc_state.get("prompt", "")
+            if obs.prompt and current_prompt and current_prompt != obs.prompt:
+                return SolveResult(
+                    status=SolveStatus.STALE_OBSERVATION.value,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    detail="Challenge prompt changed since observation. New observation required.",
+                )
+        except Exception as exc:
+            return SolveResult(
+                status=SolveStatus.STALE_OBSERVATION.value,
+                solve_id=solve_session.solve_id,
+                candidate_id=solve_session.candidate.candidate_id,
+                solver=self.name,
+                detail=f"Document check failed ({exc}). Fail-closed: observation considered stale.",
+            )
 
         # --- Dispatch action ---
         if kind == ActionKind.SELECT_TILE.value:
@@ -293,11 +357,13 @@ class AgentVisionSolver(CaptchaSolverAdapter):
             if not (0.0 <= px <= 1.0 and 0.0 <= py <= 1.0):
                 raise ValueError(f"point coordinates must be normalized in [0, 1], got ({px}, {py})")
 
-            # Resolve live viewport position
+            # Resolve live viewport position using the same container hierarchy as layout inspection
             live_expr = f"""(function() {{
                 var wRef = {json.dumps(solve_session.candidate.widget_ref)};
-                var el = wRef ? document.querySelector(wRef) : null;
-                if (!el) el = document.querySelector('.recaptcha-challenge, .captcha-box, #grid, .captcha-container');
+                var specificEl = wRef ? document.querySelector(wRef) : null;
+                var container = specificEl ? (specificEl.closest('.challenge-section, form, .captcha-container, .recaptcha-challenge, .captcha-box, .captcha-slider') || specificEl) : null;
+                var bframe = document.querySelector('iframe[src*="bframe"], iframe[title*="challenge"], .recaptcha-challenge, .h-captcha-challenge, .captcha-modal, .captcha-container');
+                var el = container || bframe || document.querySelector('.captcha-box, #captcha, [class*="captcha"]') || specificEl;
                 if (el) {{
                     var r = el.getBoundingClientRect();
                     return {{ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }};
@@ -331,7 +397,7 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                     var container = root ? (root.closest('.captcha-box, .challenge-section, .captcha-container') || root) : null;
                     if (container) input = container.querySelector('input[type="text"], input:not([type="hidden"])');
                 }}
-                if (!input) input = document.querySelector('.captcha-box input, #captcha-input, #answer');
+                if (!input && container) input = container.querySelector('.captcha-box input, #captcha-input, #answer, input[type="text"]');
                 if (input) {{
                     input.scrollIntoView({{ block: 'center', behavior: 'instant' }});
                     input.focus();
@@ -366,8 +432,9 @@ class AgentVisionSolver(CaptchaSolverAdapter):
             # Scroll candidate into view and get fresh live viewport coordinates
             expr = f"""(function() {{
                 var wRef = {json.dumps(solve_session.candidate.widget_ref)};
-                var el = wRef ? document.querySelector(wRef) : null;
-                if (!el) el = document.querySelector('.captcha-slider, .puzzle-slider, #slider-track, #drag-handle');
+                var specificEl = wRef ? document.querySelector(wRef) : null;
+                var container = specificEl ? (specificEl.closest('.challenge-section, form, .captcha-container, .recaptcha-challenge, .captcha-box, .captcha-slider, .puzzle-slider') || specificEl) : null;
+                var el = container || document.querySelector('.captcha-slider, .puzzle-slider, #slider-track, #drag-handle') || specificEl;
                 if (el) {{
                     el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
                     var r = el.getBoundingClientRect();
@@ -394,9 +461,8 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 var wRef = {json.dumps(solve_session.candidate.widget_ref)};
                 var root = wRef ? document.querySelector(wRef) : null;
                 var container = root ? (root.closest('.challenge-section, .captcha-container, .recaptcha-challenge, .captcha-box') || root.parentElement || root) : null;
-                // Specifically look for challenge verify buttons, NEVER generic form submit buttons
-                var btn = (container ? container.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], input[id*="verify"], .verify-btn, .btn-verify, button[aria-label*="Verify"], button[aria-label*="Xác minh"]') : null) ||
-                          document.querySelector('#recaptcha-verify-button, #captcha-verify-btn, .recaptcha-challenge button[id*="verify"], .captcha-box button[id*="verify"]');
+                // Specifically look for challenge verify buttons strictly inside widget container, NEVER document-wide
+                var btn = container ? container.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], input[id*="verify"], .verify-btn, .btn-verify, button[aria-label*="Verify"], button[aria-label*="Xác minh"]') : null;
                 if (btn) {{
                     btn.scrollIntoView({{ block: 'center', behavior: 'instant' }});
                     var r = btn.getBoundingClientRect();
@@ -558,10 +624,9 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                     }}
                 }}
 
-                // Controls: specifically challenge verify controls only
+                // Controls: specifically challenge verify controls only strictly within widget container
                 var controls = [];
-                var verifyBtn = (el ? el.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], input[id*="verify"], .btn-verify, .verify-btn, button[aria-label*="Verify"], button[aria-label*="Xác minh"]') : null) ||
-                                document.querySelector('#recaptcha-verify-button, #captcha-verify-btn, .recaptcha-challenge button[id*="verify"], .captcha-box button[id*="verify"]');
+                var verifyBtn = el ? el.querySelector('#recaptcha-verify-button, #captcha-verify-btn, button[id*="verify"], input[id*="verify"], .btn-verify, .verify-btn, button[aria-label*="Verify"], button[aria-label*="Xác minh"]') : null;
                 if (verifyBtn && candidateViewportRect) {{
                     var vr = verifyBtn.getBoundingClientRect();
                     controls.push({{

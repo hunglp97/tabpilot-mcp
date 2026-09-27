@@ -313,6 +313,12 @@ def _handle_start(
         baseline_token_fingerprint=baseline_fp,
     )
 
+    # Select solver and validate requirements BEFORE acquiring lease
+    solver = get_solver_adapter(strat, chosen, agent_vision=vision)
+    solve_session.solver_name = solver.name
+    for cap in solver.requires:
+        session.require(cap)
+
     # Acquire lease
     active_solve = session.acquire_solve(tab.id, solve_session)
     if active_solve is not solve_session:
@@ -336,12 +342,6 @@ def _handle_start(
             observation=active_solve.last_observation.to_dict() if active_solve.last_observation else None,
         )
         return _finish_step(session, tab, active_solve, res)
-
-    # Select solver and validate requirements
-    solver = get_solver_adapter(strat, chosen, agent_vision=vision)
-    solve_session.solver_name = solver.name
-    for cap in solver.requires:
-        session.require(cap)
 
     # Execute step with solve context
     session._solve_local.is_internal_solve = True
@@ -386,6 +386,9 @@ def _handle_observe(
     return _finish_step(session, tab, solve_session, result)
 
 
+_UNKNOWN_OUTCOME = object()
+
+
 def _handle_act(
     session: Session,
     tab: TabInfo,
@@ -405,6 +408,20 @@ def _handle_act(
 
     solve_session: SolveSession | None = session.get_active_solve(tab.id)
     if not solve_session or solve_session.solve_id != solve_id:
+        completed = session.get_solve(solve_id) if hasattr(session, "get_solve") else None
+        if completed and completed.tab_id == tab.id:
+            action_payload_str = json.dumps(action, sort_keys=True)
+            payload_hash = hashlib.sha256(f"{action_id}:{action_payload_str}".encode("utf-8")).hexdigest()
+            with completed.lock:
+                if action_id in completed.action_receipts:
+                    prev_hash, prev_result = completed.action_receipts[action_id]
+                    if prev_hash == payload_hash:
+                        if prev_result is _UNKNOWN_OUTCOME:
+                            raise ActionOutcomeUnknownError(
+                                f"Action {action_id!r} previously failed with unknown outcome; cannot safely replay side effect."
+                            )
+                        return prev_result
+                    raise ValueError(f"Conflicting payload for already executed action_id {action_id!r}.")
         raise SolveExpiredError(
             f"Solve session {solve_id!r} is expired or does not match active solve.",
             remedy="Start a new solve with operation='start'.",
@@ -421,6 +438,10 @@ def _handle_act(
         if action_id in solve_session.action_receipts:
             prev_hash, prev_result = solve_session.action_receipts[action_id]
             if prev_hash == payload_hash:
+                if prev_result is _UNKNOWN_OUTCOME:
+                    raise ActionOutcomeUnknownError(
+                        f"Action {action_id!r} previously failed with unknown outcome; cannot safely replay side effect."
+                    )
                 return prev_result
             raise ValueError(f"Conflicting payload for already executed action_id {action_id!r}.")
 
@@ -437,6 +458,10 @@ def _handle_act(
             if action_id in solve_session.action_receipts:
                 prev_hash, prev_result = solve_session.action_receipts[action_id]
                 if prev_hash == payload_hash:
+                    if prev_result is _UNKNOWN_OUTCOME:
+                        raise ActionOutcomeUnknownError(
+                            f"Action {action_id!r} previously failed with unknown outcome; cannot safely replay side effect."
+                        )
                     return prev_result
                 raise ValueError(f"Conflicting payload for already executed action_id {action_id!r}.")
             raise ActionOutcomeUnknownError(f"Action {action_id!r} completed with unknown outcome.")
@@ -460,10 +485,19 @@ def _handle_act(
             session._solve_local.is_internal_solve = True
             try:
                 result = solver.handle_action(session, tab, solve_session, parsed_action)
+            except Exception:
+                with solve_session.lock:
+                    solve_session.action_receipts[action_id] = (payload_hash, _UNKNOWN_OUTCOME)
+                raise
             finally:
                 session._solve_local.is_internal_solve = False
 
-            formatted = _finish_step(session, tab, solve_session, result)
+            try:
+                formatted = _finish_step(session, tab, solve_session, result)
+            except Exception:
+                with solve_session.lock:
+                    solve_session.action_receipts[action_id] = (payload_hash, _UNKNOWN_OUTCOME)
+                raise
 
         with solve_session.lock:
             solve_session.action_receipts[action_id] = (payload_hash, formatted)
@@ -497,6 +531,13 @@ def _finish_step(
     solve_session: SolveSession,
     result: SolveResult,
 ) -> Any:
+    # Check if solve deadline expired during step execution
+    if not result.terminal and solve_session.is_expired:
+        result.status = SolveStatus.TIMEOUT.value
+        result.terminal = True
+        result.remaining_ms = 0
+        result.detail = "Solve deadline exceeded"
+
     # If terminal, release lease and handle activate_on_fail
     if result.terminal:
         session.release_solve(tab.id, solve_session.solve_id)
