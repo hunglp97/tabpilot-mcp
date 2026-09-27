@@ -9,6 +9,7 @@ from tabpilot import payloads
 ALL_PAYLOADS = [
     "readable", "query_dom", "locate", "synthetic_click", "fill",
     "select_option", "matrix_scan", "matrix_click", "wait_for",
+    "captcha_detect",
 ]
 
 

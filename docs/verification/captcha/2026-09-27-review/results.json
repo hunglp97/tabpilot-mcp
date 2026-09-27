@@ -1,0 +1,47 @@
+{
+  "browser": "Chrome/154.0.8037.57",
+  "default_image_output": {
+    "status": "needs_agent",
+    "python_result_type": "str",
+    "has_inline_image": false
+  },
+  "repeated_start": {
+    "first_id": "solve_053a488656",
+    "second_id": "solve_0a2e16a9e6",
+    "active_id": "solve_053a488656",
+    "second_is_resumable": false
+  },
+  "unrelated_checkbox_false_pass": {
+    "status": "widget_passed",
+    "success": true,
+    "attempts": 0
+  },
+  "verify_submits_business_form": {
+    "submit_count": 2,
+    "status": "needs_agent"
+  },
+  "stale_document_action": {
+    "unrelated_clicks": 1,
+    "status": "needs_agent"
+  },
+  "optional_expected_fields": {
+    "verified": false,
+    "detail": "Verification failed: page threw at line 2: ReferenceError: None is not defined"
+  },
+  "scrolled_capture_mapping": {
+    "scrollY": 727,
+    "crop_y_sent_to_page_capture": 281,
+    "widget_viewport_y": 281
+  },
+  "oopif_frame_discovery": {
+    "iframe_targets": 2,
+    "frame_refs": 1,
+    "child_refs": 0,
+    "session_ids": [
+      null
+    ]
+  },
+  "concurrent_duplicate_action": {
+    "click_count": 2
+  }
+}

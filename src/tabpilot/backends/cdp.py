@@ -10,6 +10,7 @@ viable place to run a logged-in browser around the clock.
 from __future__ import annotations
 
 import json
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -18,7 +19,7 @@ from typing import Any
 
 from ..errors import BridgeOffError, JSError, NoTabError, TimeoutError_, cdp_launch_hint
 from ._ws import WebSocket
-from .base import Backend, Capability, TabInfo
+from .base import Backend, Capability, FrameRef, TabInfo
 
 #: Named keys mapped to the fields ``Input.dispatchKeyEvent`` wants.
 KEY_MAP: dict[str, dict[str, Any]] = {
@@ -51,6 +52,8 @@ class CDPBackend(Backend):
         Capability.ACTIVATE,
         Capability.SCREENSHOT,
         Capability.TRUSTED_INPUT,
+        Capability.FRAME_EVAL,
+        Capability.DRAG,
     })
 
     def __init__(self, host: str = "127.0.0.1", port: int = 9222, timeout_s: float = 20.0) -> None:
@@ -59,6 +62,7 @@ class CDPBackend(Backend):
         self.timeout_s = timeout_s
         self._sockets: dict[str, WebSocket] = {}
         self._next_id = 0
+        self._lock = threading.RLock()
 
     @property
     def base_url(self) -> str:
@@ -223,30 +227,38 @@ class CDPBackend(Backend):
         method: str,
         params: dict[str, Any] | None = None,
         timeout_s: float | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
-        timeout = self.timeout_s if timeout_s is None else timeout_s
-        socket_ = self._socket_for(tab_id)
-        socket_.settimeout(timeout)
+        with self._lock:
+            timeout = self.timeout_s if timeout_s is None else timeout_s
+            socket_ = self._socket_for(tab_id)
+            socket_.settimeout(timeout)
 
-        self._next_id += 1
-        message_id = self._next_id
-        payload = {"id": message_id, "method": method, "params": params or {}}
+            self._next_id += 1
+            message_id = self._next_id
+            payload: dict[str, Any] = {"id": message_id, "method": method, "params": params or {}}
+            if session_id:
+                payload["sessionId"] = session_id
 
-        try:
-            socket_.send_text(json.dumps(payload))
-            # CDP interleaves events with responses; skip anything that is not ours.
-            while True:
-                message = json.loads(socket_.recv_text())
-                if message.get("id") != message_id:
-                    continue
-                if "error" in message:
-                    error = message["error"]
-                    raise JSError(f"{method} failed: {error.get('message', error)}")
-                return message.get("result", {})
-        except (BridgeOffError, TimeoutError_):
-            # A dead or wedged socket must not be reused for the next call.
-            self._drop_socket(tab_id)
-            raise
+            try:
+                socket_.send_text(json.dumps(payload))
+                deadline = time.monotonic() + timeout
+                while True:
+                    remaining = max(0.05, deadline - time.monotonic())
+                    socket_.settimeout(remaining)
+                    message = json.loads(socket_.recv_text())
+                    if message.get("id") != message_id:
+                        continue
+                    if session_id and message.get("sessionId") != session_id:
+                        continue
+                    if "error" in message:
+                        error = message["error"]
+                        raise JSError(f"{method} failed: {error.get('message', error)}")
+                    return message.get("result", {})
+            except (BridgeOffError, TimeoutError_):
+                # A dead or wedged socket must not be reused for the next call.
+                self._drop_socket(tab_id)
+                raise
 
     # --- evaluation ----------------------------------------------------------
 
@@ -307,19 +319,146 @@ class CDPBackend(Backend):
                 params["clip"] = {"x": 0, "y": 0, "width": width, "height": height, "scale": 1}
                 params["captureBeyondViewport"] = True
 
-        result = self._command(tab_id, "Page.captureScreenshot", params, timeout_s=max(timeout_s, 30.0))
+        result = self._command(tab_id, "Page.captureScreenshot", params, timeout_s=timeout_s)
         data = result.get("data")
         if not data:
             raise JSError("Chrome returned an empty screenshot.")
         return base64.b64decode(data)
 
+    # --- frames --------------------------------------------------------------
+
+    def list_frames(self, tab_id: str) -> list[FrameRef]:
+        self._command(tab_id, "Page.enable", timeout_s=self.timeout_s)
+        tree_result = self._command(tab_id, "Page.getFrameTree", timeout_s=self.timeout_s)
+        frame_tree = tree_result.get("frameTree", {})
+
+        frames: list[FrameRef] = []
+
+        def walk(node: dict[str, Any], parent_id: str | None = None) -> None:
+            f = node.get("frame", {})
+            fid = f.get("id", "")
+            if fid:
+                frames.append(
+                    FrameRef(
+                        tab_id=tab_id,
+                        frame_id=fid,
+                        name=f.get("name", ""),
+                        url=f.get("url", ""),
+                        parent_id=parent_id,
+                        security_origin=f.get("securityOrigin", ""),
+                    )
+                )
+            for child in node.get("childFrames", []):
+                walk(child, parent_id=fid)
+
+        if frame_tree:
+            walk(frame_tree, None)
+        return frames
+
+    def evaluate_in_frame(
+        self, tab_id: str, frame_ref: FrameRef, expression: str, timeout_s: float = 20.0
+    ) -> Any:
+        if frame_ref.session_id:
+            result = self._command(
+                tab_id,
+                "Runtime.evaluate",
+                {
+                    "expression": expression,
+                    "returnByValue": True,
+                    "awaitPromise": True,
+                    "userGesture": True,
+                    "timeout": int(timeout_s * 1000),
+                },
+                timeout_s=timeout_s + 2.0,
+                session_id=frame_ref.session_id,
+            )
+        else:
+            self._command(tab_id, "Page.enable", timeout_s=self.timeout_s)
+            world_res = self._command(
+                tab_id,
+                "Page.createIsolatedWorld",
+                {
+                    "frameId": frame_ref.frame_id,
+                    "worldName": "tabpilot_eval",
+                    "grantUniversalAccess": True,
+                },
+                timeout_s=timeout_s,
+            )
+            context_id = world_res.get("executionContextId")
+            params: dict[str, Any] = {
+                "expression": expression,
+                "returnByValue": True,
+                "awaitPromise": True,
+                "userGesture": True,
+                "timeout": int(timeout_s * 1000),
+            }
+            if context_id is not None:
+                params["contextId"] = context_id
+            result = self._command(tab_id, "Runtime.evaluate", params, timeout_s=timeout_s + 2.0)
+
+        exception = result.get("exceptionDetails")
+        if exception:
+            raise JSError(_format_exception(exception))
+
+        remote = result.get("result", {})
+        if remote.get("type") == "undefined":
+            return None
+        if "value" in remote:
+            return remote["value"]
+        return remote.get("description") or remote.get("className") or None
+
     # --- trusted input -------------------------------------------------------
 
     def click_at(self, tab_id: str, x: float, y: float, timeout_s: float = 20.0) -> None:
-        common = {"x": x, "y": y, "button": "left", "clickCount": 1, "buttons": 1}
         self._command(tab_id, "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y}, timeout_s)
-        self._command(tab_id, "Input.dispatchMouseEvent", {"type": "mousePressed", **common}, timeout_s)
-        self._command(tab_id, "Input.dispatchMouseEvent", {"type": "mouseReleased", **common}, timeout_s)
+        self._command(tab_id, "Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1, "buttons": 1}, timeout_s)
+        self._command(tab_id, "Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1, "buttons": 0}, timeout_s)
+
+    def drag(
+        self,
+        tab_id: str,
+        from_x: float,
+        from_y: float,
+        to_x: float,
+        to_y: float,
+        steps: int = 10,
+        duration_s: float = 0.5,
+        timeout_s: float = 20.0,
+    ) -> None:
+        self._command(
+            tab_id,
+            "Input.dispatchMouseEvent",
+            {"type": "mouseMoved", "x": from_x, "y": from_y},
+            timeout_s=timeout_s,
+        )
+        self._command(
+            tab_id,
+            "Input.dispatchMouseEvent",
+            {"type": "mousePressed", "x": from_x, "y": from_y, "button": "left", "clickCount": 1, "buttons": 1},
+            timeout_s=timeout_s,
+        )
+        try:
+            step_count = max(1, steps)
+            delay = duration_s / step_count if duration_s > 0 else 0
+            for i in range(1, step_count + 1):
+                frac = i / step_count
+                curr_x = from_x + (to_x - from_x) * frac
+                curr_y = from_y + (to_y - from_y) * frac
+                self._command(
+                    tab_id,
+                    "Input.dispatchMouseEvent",
+                    {"type": "mouseMoved", "x": curr_x, "y": curr_y, "buttons": 1},
+                    timeout_s=timeout_s,
+                )
+                if delay > 0:
+                    time.sleep(delay)
+        finally:
+            self._command(
+                tab_id,
+                "Input.dispatchMouseEvent",
+                {"type": "mouseReleased", "x": to_x, "y": to_y, "button": "left", "clickCount": 1, "buttons": 0},
+                timeout_s=timeout_s,
+            )
 
     def insert_text(self, tab_id: str, text: str, timeout_s: float = 20.0) -> None:
         self._command(tab_id, "Input.insertText", {"text": text}, timeout_s)

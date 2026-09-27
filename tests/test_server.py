@@ -16,6 +16,7 @@ EXPECTED_TOOLS = {
     "open_tab", "close_tab", "navigate", "activate_tab",
     "eval_js", "click", "fill", "select_option", "select_option_ui",
     "scan_matrix", "fill_matrix", "wait_for", "screenshot",
+    "detect_captcha", "solve_captcha",
 }
 
 

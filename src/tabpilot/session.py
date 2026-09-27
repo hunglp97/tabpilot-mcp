@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from .backends.base import Backend, TabInfo
 from .backends.registry import build_backend
 from .config import Config
-from .errors import JSError, TabPilotError, UnsupportedByBackendError
+from .errors import CaptchaBusyError, JSError, TabPilotError, UnsupportedByBackendError
 from . import payloads, tabs as tabs_module
 
 #: Why each capability might be missing, and what to do about it.
@@ -21,6 +22,14 @@ _CAPABILITY_REMEDY = {
         "Trusted input events need the CDP backend. TabPilot will fall back to DOM events,\n"
         "which most pages accept — but pages that check event.isTrusted will not."
     ),
+    "frame_eval": (
+        "Evaluating inside iframes/frames needs the CDP backend.\n"
+        "Relaunch Chrome with a debugging port, then retry:\n"
+        "  tabpilot doctor"
+    ),
+    "drag": (
+        "Dragging elements requires trusted mouse events on the CDP backend."
+    ),
 }
 
 
@@ -30,6 +39,8 @@ class Session:
     def __init__(self, config: Config) -> None:
         self.config = config
         self._backend: Backend | None = None
+        self._active_solves: dict[str, Any] = {}
+        self._solve_local = threading.local()
 
     @property
     def backend(self) -> Backend:
@@ -43,6 +54,7 @@ class Session:
         Chrome restarts, laptops sleep, SSH tunnels die. Rebuilding on demand
         means a session survives all three without the client reconnecting.
         """
+        self._active_solves.clear()
         if self._backend is not None:
             try:
                 self._backend.close()
@@ -51,6 +63,48 @@ class Session:
 
     def close(self) -> None:
         self.reset()
+
+    # --- solve lease and mutation guard --------------------------------------
+
+    def acquire_solve(self, tab_id: str, solve_session: Any) -> Any:
+        """Acquire solve lease on tab_id. Returns active solve or raises CaptchaBusyError."""
+        existing = self._active_solves.get(tab_id)
+        if existing is not None:
+            if existing.is_expired:
+                del self._active_solves[tab_id]
+            elif existing.candidate.candidate_id == solve_session.candidate.candidate_id:
+                return existing
+            else:
+                raise CaptchaBusyError(
+                    f"Tab '{tab_id}' is already undergoing CAPTCHA solve '{existing.solve_id}'.",
+                    remedy="Finish or cancel the current solve before starting a new one.",
+                )
+        self._active_solves[tab_id] = solve_session
+        return solve_session
+
+    def get_active_solve(self, tab_id: str) -> Any | None:
+        solve = self._active_solves.get(tab_id)
+        if solve is not None and solve.is_expired:
+            del self._active_solves[tab_id]
+            return None
+        return solve
+
+    def release_solve(self, tab_id: str, solve_id: str | None = None) -> None:
+        solve = self._active_solves.get(tab_id)
+        if solve is not None:
+            if solve_id is None or solve.solve_id == solve_id:
+                self._active_solves.pop(tab_id, None)
+
+    def check_mutation_guard(self, tab_id: str) -> None:
+        """Raise CaptchaBusyError if an external tool tries to mutate a tab undergoing solve."""
+        if getattr(self._solve_local, "is_internal_solve", False):
+            return
+        solve = self.get_active_solve(tab_id)
+        if solve is not None:
+            raise CaptchaBusyError(
+                f"Tab '{tab_id}' has an active CAPTCHA solve lease ('{solve.solve_id}').",
+                remedy="Call solve_captcha with operation='cancel' or complete the solve first.",
+            )
 
     # --- capability gating ---------------------------------------------------
 

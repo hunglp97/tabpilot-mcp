@@ -16,6 +16,17 @@ DEFAULT_DISPLAY = ":99"
 DEFAULT_VNC_PORT = 5901
 DEFAULT_USER_DATA_DIR = "~/tabpilot-chrome"
 
+DEFAULT_CAPTCHA_ENABLED = True
+DEFAULT_CAPTCHA_STRATEGY = "auto"
+DEFAULT_CAPTCHA_TIMEOUT_MS = 120_000
+DEFAULT_CAPTCHA_CALL_TIMEOUT_MS = 15_000
+DEFAULT_CAPTCHA_MAX_ATTEMPTS = 2
+DEFAULT_CAPTCHA_MAX_ROUNDS = 8
+DEFAULT_CAPTCHA_MAX_ACTIONS = 24
+DEFAULT_CAPTCHA_ACTIVATE_ON_FAIL = False
+DEFAULT_CAPTCHA_COOLDOWN_MS = 60_000
+DEFAULT_CAPTCHA_STT_LANG = "en"
+
 
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
@@ -58,6 +69,34 @@ class Config:
     vnc_port: int = DEFAULT_VNC_PORT
     user_data_dir: str = DEFAULT_USER_DATA_DIR
 
+    # CAPTCHA handling settings
+    captcha_enabled: bool = DEFAULT_CAPTCHA_ENABLED
+    captcha_strategy: str = DEFAULT_CAPTCHA_STRATEGY
+    captcha_timeout_ms: int = DEFAULT_CAPTCHA_TIMEOUT_MS
+    captcha_call_timeout_ms: int = DEFAULT_CAPTCHA_CALL_TIMEOUT_MS
+    captcha_max_attempts: int = DEFAULT_CAPTCHA_MAX_ATTEMPTS
+    captcha_max_rounds: int = DEFAULT_CAPTCHA_MAX_ROUNDS
+    captcha_max_actions: int = DEFAULT_CAPTCHA_MAX_ACTIONS
+    captcha_activate_on_fail: bool = DEFAULT_CAPTCHA_ACTIVATE_ON_FAIL
+    captcha_cooldown_ms: int = DEFAULT_CAPTCHA_COOLDOWN_MS
+    captcha_stt_model_path: str | None = None
+    captcha_stt_lang: str = DEFAULT_CAPTCHA_STT_LANG
+    captcha_ocr_model_path: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.captcha_timeout_ms <= 0 or self.captcha_timeout_ms > 300_000:
+            raise ValueError(f"captcha_timeout_ms must be in 1..300000, got {self.captcha_timeout_ms}")
+        if self.captcha_call_timeout_ms <= 0 or self.captcha_call_timeout_ms > 60_000:
+            raise ValueError(f"captcha_call_timeout_ms must be in 1..60000, got {self.captcha_call_timeout_ms}")
+        if self.captcha_max_attempts <= 0 or self.captcha_max_attempts > 5:
+            raise ValueError(f"captcha_max_attempts must be in 1..5, got {self.captcha_max_attempts}")
+        if self.captcha_max_rounds <= 0 or self.captcha_max_rounds > 20:
+            raise ValueError(f"captcha_max_rounds must be in 1..20, got {self.captcha_max_rounds}")
+        if self.captcha_max_actions <= 0 or self.captcha_max_actions > 60:
+            raise ValueError(f"captcha_max_actions must be in 1..60, got {self.captcha_max_actions}")
+        if self.captcha_cooldown_ms < 0:
+            raise ValueError(f"captcha_cooldown_ms must be >= 0, got {self.captcha_cooldown_ms}")
+
     @classmethod
     def from_env(cls) -> "Config":
         default_return = "always" if _env_bool("TABPILOT_REMOTE") else "auto"
@@ -76,6 +115,18 @@ class Config:
             display=os.environ.get("TABPILOT_DISPLAY", DEFAULT_DISPLAY),
             vnc_port=_env_int("TABPILOT_VNC_PORT", DEFAULT_VNC_PORT),
             user_data_dir=os.environ.get("TABPILOT_USER_DATA_DIR", DEFAULT_USER_DATA_DIR),
+            captcha_enabled=_env_bool("TABPILOT_CAPTCHA", DEFAULT_CAPTCHA_ENABLED),
+            captcha_strategy=os.environ.get("TABPILOT_CAPTCHA_STRATEGY", DEFAULT_CAPTCHA_STRATEGY).strip().lower(),
+            captcha_timeout_ms=_env_int("TABPILOT_CAPTCHA_TIMEOUT_MS", DEFAULT_CAPTCHA_TIMEOUT_MS),
+            captcha_call_timeout_ms=_env_int("TABPILOT_CAPTCHA_CALL_TIMEOUT_MS", DEFAULT_CAPTCHA_CALL_TIMEOUT_MS),
+            captcha_max_attempts=_env_int("TABPILOT_CAPTCHA_MAX_ATTEMPTS", DEFAULT_CAPTCHA_MAX_ATTEMPTS),
+            captcha_max_rounds=_env_int("TABPILOT_CAPTCHA_MAX_ROUNDS", DEFAULT_CAPTCHA_MAX_ROUNDS),
+            captcha_max_actions=_env_int("TABPILOT_CAPTCHA_MAX_ACTIONS", DEFAULT_CAPTCHA_MAX_ACTIONS),
+            captcha_activate_on_fail=_env_bool("TABPILOT_CAPTCHA_ACTIVATE_ON_FAIL", DEFAULT_CAPTCHA_ACTIVATE_ON_FAIL),
+            captcha_cooldown_ms=_env_int("TABPILOT_CAPTCHA_COOLDOWN_MS", DEFAULT_CAPTCHA_COOLDOWN_MS),
+            captcha_stt_model_path=os.environ.get("TABPILOT_CAPTCHA_STT_MODEL_PATH"),
+            captcha_stt_lang=os.environ.get("TABPILOT_CAPTCHA_STT_LANG", DEFAULT_CAPTCHA_STT_LANG),
+            captcha_ocr_model_path=os.environ.get("TABPILOT_CAPTCHA_OCR_MODEL_PATH"),
         )
 
     def merge_args(self, args) -> "Config":
@@ -85,6 +136,10 @@ class Config:
             "backend", "cdp_host", "cdp_port", "application_name", "max_chars",
             "timeout_ms", "matrix_delay_ms", "return_images", "display",
             "vnc_port", "user_data_dir",
+            "captcha_enabled", "captcha_strategy", "captcha_timeout_ms",
+            "captcha_call_timeout_ms", "captcha_max_attempts", "captcha_max_rounds",
+            "captcha_max_actions", "captcha_activate_on_fail", "captcha_cooldown_ms",
+            "captcha_stt_model_path", "captcha_stt_lang", "captcha_ocr_model_path",
         ):
             value = getattr(args, name, None)
             if value is not None:
@@ -138,6 +193,32 @@ def add_common_args(parser) -> None:
     parser.add_argument("--vnc-port", type=int, default=None, help="VNC port (env TABPILOT_VNC_PORT)")
     parser.add_argument("--user-data-dir", default=None,
                         help="Chrome profile directory (env TABPILOT_USER_DATA_DIR)")
+    parser.add_argument("--captcha", dest="captcha_enabled", action="store_true", default=None,
+                        help="enable CAPTCHA detection and solving (env TABPILOT_CAPTCHA)")
+    parser.add_argument("--no-captcha", dest="captcha_enabled", action="store_false", default=None,
+                        help="disable CAPTCHA detection and solving")
+    parser.add_argument("--captcha-strategy", choices=["auto", "passive_wait", "checkbox", "agent_vision", "image_ocr", "recaptcha_audio", "slider_cv"], default=None,
+                        help="CAPTCHA solving strategy (env TABPILOT_CAPTCHA_STRATEGY)")
+    parser.add_argument("--captcha-timeout-ms", type=int, default=None,
+                        help="overall CAPTCHA solve timeout in ms (env TABPILOT_CAPTCHA_TIMEOUT_MS)")
+    parser.add_argument("--captcha-call-timeout-ms", type=int, default=None,
+                        help="single CAPTCHA tool call ceiling in ms (env TABPILOT_CAPTCHA_CALL_TIMEOUT_MS)")
+    parser.add_argument("--captcha-max-attempts", type=int, default=None,
+                        help="max CAPTCHA retry attempts (env TABPILOT_CAPTCHA_MAX_ATTEMPTS)")
+    parser.add_argument("--captcha-max-rounds", type=int, default=None,
+                        help="max CAPTCHA observation rounds (env TABPILOT_CAPTCHA_MAX_ROUNDS)")
+    parser.add_argument("--captcha-max-actions", type=int, default=None,
+                        help="max CAPTCHA side-effect actions (env TABPILOT_CAPTCHA_MAX_ACTIONS)")
+    parser.add_argument("--captcha-activate-on-fail", action="store_true", default=None,
+                        help="focus tab on CAPTCHA failure if supported (env TABPILOT_CAPTCHA_ACTIVATE_ON_FAIL)")
+    parser.add_argument("--captcha-cooldown-ms", type=int, default=None,
+                        help="cooldown after failed CAPTCHA solve in ms (env TABPILOT_CAPTCHA_COOLDOWN_MS)")
+    parser.add_argument("--captcha-stt-model-path", default=None,
+                        help="path to local STT model for audio CAPTCHA (env TABPILOT_CAPTCHA_STT_MODEL_PATH)")
+    parser.add_argument("--captcha-stt-lang", default=None,
+                        help="language for audio CAPTCHA (env TABPILOT_CAPTCHA_STT_LANG)")
+    parser.add_argument("--captcha-ocr-model-path", default=None,
+                        help="path to local OCR model for text CAPTCHA (env TABPILOT_CAPTCHA_OCR_MODEL_PATH)")
 
 
 def is_linux() -> bool:

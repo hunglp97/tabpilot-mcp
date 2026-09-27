@@ -1,4 +1,4 @@
-"""The MCP server: 17 tools and 2 resources over a live browser."""
+"""The MCP server: 19 tools and 2 resources over a live browser."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from . import __version__
 from ._sdk import SDK_MAJOR, Image, Server
-from . import evidence, extract, interact, tabs as tabs_module
+from . import captcha, evidence, extract, interact, tabs as tabs_module
 from .config import Config
 from .errors import BridgeOffError, TabPilotError
 from .session import Session
@@ -30,6 +30,11 @@ answer the other two tools give in a few lines.
 Filling forms: `fill` fires both `input` and `change` through the native setter,
 so React sees it. For matrix/grid questions use `fill_matrix`, never a loop of
 clicks — batched clicks make React commit only the last row.
+
+Solving CAPTCHAs: when encountering a CAPTCHA, call `detect_captcha` to inspect it,
+then `solve_captcha(operation='start')`. If `solve_captcha` returns `needs_agent`,
+read the prompt and inline image, choose an allowed action (e.g. `select_tile`, `click_point`,
+`type_answer`, `drag`, `verify`), and call `solve_captcha(operation='act', ...)`.
 """
 
 
@@ -187,6 +192,7 @@ def create_server(config: Config | None = None) -> Server:
             url_pattern: Regex matched against tab URLs. Must identify one tab.
         """
         tab = session.resolve(tab_id, url_pattern)
+        session.release_solve(tab.id)
         session.backend.close_tab(tab.id)
         return f"Closed `{tab.id}` ({tab.title or tab.url})"
 
@@ -206,6 +212,7 @@ def create_server(config: Config | None = None) -> Server:
             wait_for_load: Wait until the document finishes loading.
         """
         tab = session.resolve(tab_id, url_pattern)
+        session.check_mutation_guard(tab.id)
         previous_url = tab.url
         session.backend.navigate(tab.id, url)
         note = ""
@@ -268,6 +275,7 @@ def create_server(config: Config | None = None) -> Server:
             timeout_ms: Per-call timeout.
         """
         tab = session.resolve(tab_id, url_pattern)
+        session.check_mutation_guard(tab.id)
         value = session.eval_raw(tab.id, expression, (timeout_ms / 1000.0) if timeout_ms else None)
         return _json(value, pretty=True)
 
@@ -294,6 +302,7 @@ def create_server(config: Config | None = None) -> Server:
             nth: Which match to click, 0-based.
         """
         tab = session.resolve(tab_id, url_pattern)
+        session.check_mutation_guard(tab.id)
         return interact.click(session, tab, selector=selector, text=text, nth=nth)
 
     @tool
@@ -321,6 +330,7 @@ def create_server(config: Config | None = None) -> Server:
             press_enter: Press Enter afterwards, for search boxes.
         """
         tab = session.resolve(tab_id, url_pattern)
+        session.check_mutation_guard(tab.id)
         return interact.fill(
             session, tab, selector=selector, value=value,
             clear=clear, nth=nth, press_enter=press_enter,
@@ -350,6 +360,7 @@ def create_server(config: Config | None = None) -> Server:
             nth: Which match to use, 0-based.
         """
         tab = session.resolve(tab_id, url_pattern)
+        session.check_mutation_guard(tab.id)
         return interact.select_option(session, tab, selector=selector, values=values, by=by, nth=nth)
 
     @tool
@@ -376,6 +387,7 @@ def create_server(config: Config | None = None) -> Server:
             timeout_ms: How long to wait for the menu to appear.
         """
         tab = session.resolve(tab_id, url_pattern)
+        session.check_mutation_guard(tab.id)
         return interact.select_option_via_ui(
             session, tab, control_selector=control_selector, option_text=option_text,
             option_selector=option_selector, timeout_ms=timeout_ms,
@@ -430,6 +442,7 @@ def create_server(config: Config | None = None) -> Server:
             delay_ms: Delay between rows. Raise it to 150-250 if rows stay blank.
         """
         tab = session.resolve(tab_id, url_pattern)
+        session.check_mutation_guard(tab.id)
         return interact.fill_matrix(
             session, tab, selector=selector, question_index=question_index,
             column_index=column_index, rows=rows, only_unanswered=only_unanswered,
@@ -506,6 +519,88 @@ def create_server(config: Config | None = None) -> Server:
         if config.wants_inline_image(return_image) and Image is not None:
             return [summary, Image(data=data, format=image_format)]
         return summary
+
+    # --- captcha -------------------------------------------------------------
+
+    @tool
+    def detect_captcha(
+        tab_id: str | None = None,
+        url_pattern: str | None = None,
+    ) -> str:
+        """Scan a tab for CAPTCHA widgets and challenges.
+
+        Returns a DetectionResult JSON describing detected providers (recaptcha,
+        hcaptcha, cloudflare, custom), challenge kinds, state, and confidence.
+
+        Args:
+            tab_id: Exact tab id. Prefer url_pattern.
+            url_pattern: Regex matched against tab URLs.
+        """
+        s = getattr(mcp, "_tabpilot_session", session)
+        return captcha.detect_captcha(s, tab_id=tab_id, url_pattern=url_pattern)
+
+    @tool
+    def solve_captcha(
+        tab_id: str | None = None,
+        url_pattern: str | None = None,
+        operation: str = "start",
+        candidate_id: str | None = None,
+        solve_id: str | None = None,
+        observation_id: str | None = None,
+        action_id: str | None = None,
+        action: dict | None = None,
+        strategy: str | None = None,
+        agent_vision: bool | None = None,
+        timeout_ms: int | None = None,
+        max_attempts: int | None = None,
+        max_rounds: int | None = None,
+        expected: dict | None = None,
+        activate_on_fail: bool | None = None,
+    ) -> Any:
+        """Detect and solve CAPTCHA challenges with agent-in-the-loop vision or local strategies.
+
+        Supports operations:
+        - 'start': begin solving a candidate challenge. Returns waiting, needs_agent, or terminal result.
+        - 'observe': poll status or get updated observation for an active solve_id.
+        - 'act': execute a specific action (select_tile, click_point, type_answer, drag, verify, refresh).
+        - 'cancel': release solve lease on the tab.
+
+        Args:
+            tab_id: Exact tab id.
+            url_pattern: Regex matched against tab URLs.
+            operation: 'start', 'observe', 'act', or 'cancel'.
+            candidate_id: Specific candidate from detect_captcha (optional at start).
+            solve_id: ID returned by start, required for observe, act, and cancel.
+            observation_id: Required for act to prevent stale clicks.
+            action_id: Unique idempotent action ID for act.
+            action: Action dictionary with 'kind' and relevant parameters.
+            strategy: 'auto', 'passive_wait', 'checkbox', 'agent_vision'.
+            agent_vision: Defaults to True; set False if client cannot process images.
+            timeout_ms: Overall solve deadline in milliseconds.
+            max_attempts: Maximum retry attempts for failed answers.
+            max_rounds: Maximum observation rounds.
+            expected: Dict with postconditions (url_pattern, visible_selector, text_contains).
+            activate_on_fail: Whether to bring tab to front on terminal failure.
+        """
+        s = getattr(mcp, "_tabpilot_session", session)
+        return captcha.solve_captcha(
+            session=s,
+            tab_id=tab_id,
+            url_pattern=url_pattern,
+            operation=operation,
+            candidate_id=candidate_id,
+            solve_id=solve_id,
+            observation_id=observation_id,
+            action_id=action_id,
+            action=action,
+            strategy=strategy,
+            agent_vision=agent_vision,
+            timeout_ms=timeout_ms,
+            max_attempts=max_attempts,
+            max_rounds=max_rounds,
+            expected=expected,
+            activate_on_fail=activate_on_fail,
+        )
 
     # --- resources -----------------------------------------------------------
 

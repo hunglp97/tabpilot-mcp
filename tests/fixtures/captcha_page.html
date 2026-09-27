@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TabPilot CAPTCHA Benchmark Fixture</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background: #f5f6fa; }
+    h1 { color: #2f3640; }
+    .challenge-section { background: #fff; padding: 20px; border-radius: 8px; margin-bottom: 24px; box-shadow: 0 2px 6px rgba(0,0,0,0.06); }
+    .status-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 13px; margin-left: 10px; }
+    .badge-pending { background: #f1f2f6; color: #747d8c; }
+    .badge-passed { background: #2ed573; color: white; }
+
+    /* Turnstile */
+    .cf-turnstile { display: inline-flex; align-items: center; border: 1px solid #dcdde1; border-radius: 4px; padding: 12px 16px; background: #fafafa; cursor: pointer; user-select: none; }
+    .cf-checkbox { width: 24px; height: 24px; border: 2px solid #718093; border-radius: 3px; margin-right: 12px; display: flex; align-items: center; justify-content: center; }
+    .cf-turnstile-passed .cf-checkbox { border-color: #2ed573; background: #2ed573; color: white; }
+    .cf-turnstile-passed .cf-checkbox::after { content: "✓"; font-size: 16px; font-weight: bold; }
+
+    /* reCAPTCHA v2 Checkbox */
+    .g-recaptcha { display: inline-flex; align-items: center; border: 1px solid #dcdde1; border-radius: 4px; padding: 12px 16px; background: #fafafa; width: 300px; height: 74px; box-sizing: border-box; }
+    .recaptcha-checkbox { width: 28px; height: 28px; border: 2px solid #c1c1c1; border-radius: 2px; margin-right: 14px; cursor: pointer; background: #fff; display: flex; align-items: center; justify-content: center; }
+    .recaptcha-checkbox-checked { border-color: #0f9d58 !important; background: #0f9d58 !important; color: white !important; }
+    .recaptcha-checkbox-checked::after { content: "✓"; font-size: 18px; font-weight: bold; }
+
+    /* Image Grid Modal */
+    .recaptcha-challenge { border: 2px solid #4a69bd; border-radius: 6px; padding: 16px; background: #fff; width: 320px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); margin-top: 15px; }
+    .prompt-text { font-size: 16px; font-weight: bold; margin-bottom: 12px; color: #1e3799; }
+    .grid-container { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 12px; }
+    .rc-image-tile-target { width: 96px; height: 96px; background: #f1f2f6; border: 2px solid transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #2f3542; box-sizing: border-box; text-align: center; }
+    .rc-image-tile-target.selected { border-color: #3867d6; background: #dff9fb; font-weight: bold; }
+    .controls-row { display: flex; justify-content: space-between; align-items: center; }
+    .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
+    .btn-verify { background: #3867d6; color: white; }
+    .btn-reload { background: #dfe4ea; color: #2f3542; }
+
+    /* Text CAPTCHA */
+    .captcha-box { display: flex; align-items: center; gap: 12px; }
+    #captcha-img { border: 1px solid #ccc; background: #fff; }
+    #captcha-input { padding: 8px; font-size: 16px; width: 120px; text-transform: uppercase; }
+
+    /* Slider Puzzle */
+    .captcha-slider { width: 300px; height: 40px; background: #dfe4ea; border-radius: 20px; position: relative; margin-top: 10px; }
+    .slider-handle { width: 44px; height: 44px; background: #3867d6; border-radius: 50%; position: absolute; top: -2px; left: 0; cursor: grab; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; user-select: none; }
+    .slider-slot { position: absolute; left: 150px; top: 0; width: 44px; height: 40px; border: 2px dashed #747d8c; border-radius: 20px; box-sizing: border-box; }
+    .slider-passed { background: #2ed573 !important; }
+  </style>
+</head>
+<body>
+  <h1>TabPilot Anti-Crawl CAPTCHA Fixtures</h1>
+  <p>Local live test page for demonstrating automated CAPTCHA detection and solving.</p>
+
+  <!-- 1. Turnstile Checkbox -->
+  <div class="challenge-section" id="sec-turnstile">
+    <h2>1. Cloudflare Turnstile Checkbox <span id="turnstile-status" class="status-badge badge-pending">PENDING</span></h2>
+    <div class="cf-turnstile" id="cf-widget" data-turnstile-sitekey="0x4AAAAAAABbbbbCCCC1234">
+      <div class="cf-checkbox" id="cf-box"></div>
+      <span id="cf-label">Verify you are human</span>
+    </div>
+    <input type="hidden" name="cf-turnstile-response" id="cf-response" value="">
+  </div>
+
+  <!-- 2. reCAPTCHA v2 Checkbox -->
+  <div class="challenge-section" id="sec-recaptcha">
+    <h2>2. Google reCAPTCHA v2 Checkbox <span id="recaptcha-status" class="status-badge badge-pending">PENDING</span></h2>
+    <div class="g-recaptcha" id="g-widget" data-sitekey="6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-">
+      <div class="recaptcha-checkbox" id="g-box"></div>
+      <span>I'm not a robot</span>
+    </div>
+    <textarea name="g-recaptcha-response" id="g-response" style="display:none;"></textarea>
+  </div>
+
+  <!-- 3. Image Grid Challenge (Traffic Lights) -->
+  <div class="challenge-section" id="sec-grid">
+    <h2>3. Image Grid Challenge (3x3) <span id="grid-status" class="status-badge badge-pending">PENDING</span></h2>
+    <div class="recaptcha-challenge" id="grid-challenge">
+      <div class="prompt-text rc-imageselect-desc-no-canonical">Select all squares with traffic lights</div>
+      <div class="grid-container" id="grid-tiles">
+        <!-- 3x3 tiles: 0, 4, 8 are traffic lights -->
+        <div class="rc-image-tile-target" id="tile-0" data-content="traffic-light">🚦 Light</div>
+        <div class="rc-image-tile-target" id="tile-1" data-content="car">🚗 Car</div>
+        <div class="rc-image-tile-target" id="tile-2" data-content="bicycle">🚲 Bicycle</div>
+        <div class="rc-image-tile-target" id="tile-3" data-content="tree">🌳 Tree</div>
+        <div class="rc-image-tile-target" id="tile-4" data-content="traffic-light">🚦 Light</div>
+        <div class="rc-image-tile-target" id="tile-5" data-content="bus">🚌 Bus</div>
+        <div class="rc-image-tile-target" id="tile-6" data-content="pedestrian">🚶 Walking</div>
+        <div class="rc-image-tile-target" id="tile-7" data-content="building">🏢 House</div>
+        <div class="rc-image-tile-target" id="tile-8" data-content="traffic-light">🚦 Light</div>
+      </div>
+      <div class="controls-row">
+        <button type="button" class="btn btn-reload" id="recaptcha-reload-button">Reload</button>
+        <button type="button" class="btn btn-verify" id="recaptcha-verify-button">Verify</button>
+      </div>
+    </div>
+    <textarea name="grid-captcha-response" id="grid-response" style="display:none;"></textarea>
+  </div>
+
+  <!-- 4. Text / Alphanumeric Image CAPTCHA -->
+  <div class="challenge-section" id="sec-text">
+    <h2>4. Text Image CAPTCHA <span id="text-status" class="status-badge badge-pending">PENDING</span></h2>
+    <form id="text-captcha-form" onsubmit="return false;">
+      <div class="captcha-box">
+        <canvas id="captcha-img" width="120" height="40" alt="captcha-image"></canvas>
+        <input type="text" id="captcha-input" name="captcha_code" placeholder="Code">
+        <button type="button" class="btn btn-verify" id="captcha-verify-btn">Submit</button>
+      </div>
+      <span id="text-passed-marker" class="" style="display:none;"></span>
+    </form>
+  </div>
+
+  <!-- 5. Slider Puzzle CAPTCHA -->
+  <div class="challenge-section" id="sec-slider">
+    <h2>5. Slider Puzzle CAPTCHA <span id="slider-status" class="status-badge badge-pending">PENDING</span></h2>
+    <div class="captcha-slider" id="slider-track">
+      <div class="slider-slot"></div>
+      <div class="slider-handle" id="drag-handle">➔</div>
+    </div>
+    <span id="slider-passed-marker" class="" style="display:none;"></span>
+  </div>
+
+  <script>
+    // 1. Turnstile simulation
+    document.getElementById('cf-widget').addEventListener('click', function() {
+      var box = document.getElementById('cf-box');
+      box.textContent = "…";
+      setTimeout(function() {
+        document.getElementById('cf-widget').classList.add('cf-turnstile-passed');
+        box.textContent = "";
+        document.getElementById('cf-response').value = "CF_TOKEN_" + Math.random().toString(36).slice(2);
+        document.getElementById('turnstile-status').textContent = "PASSED";
+        document.getElementById('turnstile-status').className = "status-badge badge-passed";
+      }, 300);
+    });
+
+    // 2. reCAPTCHA v2 Checkbox simulation
+    document.getElementById('g-box').addEventListener('click', function() {
+      var box = document.getElementById('g-box');
+      box.classList.add('recaptcha-checkbox-checked');
+      document.getElementById('g-response').value = "RECAPTCHA_TOKEN_" + Math.random().toString(36).slice(2);
+      document.getElementById('recaptcha-status').textContent = "PASSED";
+      document.getElementById('recaptcha-status').className = "status-badge badge-passed";
+    });
+
+    // 3. Grid Tile selection & verification
+    document.querySelectorAll('.rc-image-tile-target').forEach(function(tile) {
+      tile.addEventListener('click', function() {
+        tile.classList.toggle('selected');
+      });
+    });
+
+    document.getElementById('recaptcha-verify-button').addEventListener('click', function() {
+      var selected = Array.from(document.querySelectorAll('.rc-image-tile-target.selected')).map(t => t.id);
+      // Correct targets are tile-0, tile-4, tile-8
+      var correct = selected.length === 3 && selected.includes('tile-0') && selected.includes('tile-4') && selected.includes('tile-8');
+      if (correct) {
+        document.getElementById('grid-response').value = "GRID_TOKEN_" + Math.random().toString(36).slice(2);
+        document.getElementById('grid-challenge').classList.add('captcha-passed');
+        document.getElementById('grid-status').textContent = "PASSED";
+        document.getElementById('grid-status').className = "status-badge badge-passed";
+      } else {
+        console.warn("Incorrect tiles selected!", selected);
+        document.getElementById('grid-status').textContent = "INCORRECT";
+      }
+    });
+
+    // 4. Text CAPTCHA Canvas Draw & Verify
+    var captchaSecret = "K7X9";
+    function drawTextCaptcha() {
+      var canvas = document.getElementById('captcha-img');
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = "#ecf0f1";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.font = "bold 24px monospace";
+      ctx.fillStyle = "#2c3e50";
+      // Draw letters with slight rotation
+      for (var i = 0; i < captchaSecret.length; i++) {
+        ctx.save();
+        ctx.translate(20 + i * 24, 28);
+        ctx.rotate((Math.random() - 0.5) * 0.3);
+        ctx.fillText(captchaSecret[i], 0, 0);
+        ctx.restore();
+      }
+      // Add a couple noise lines
+      ctx.strokeStyle = "#bdc3c7";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(10, 15);
+      ctx.lineTo(110, 30);
+      ctx.stroke();
+    }
+    drawTextCaptcha();
+
+    document.getElementById('captcha-verify-btn').addEventListener('click', function() {
+      var input = document.getElementById('captcha-input').value.trim().toUpperCase();
+      if (input === captchaSecret) {
+        document.getElementById('text-status').textContent = "PASSED";
+        document.getElementById('text-status').className = "status-badge badge-passed";
+        document.getElementById('text-passed-marker').className = "captcha-passed";
+        document.getElementById('text-passed-marker').style.display = "inline";
+      }
+    });
+
+    // 5. Slider Simulation
+    var handle = document.getElementById('drag-handle');
+    var isDragging = false;
+    var startX = 0;
+
+    function checkSliderPosition(x) {
+      // Slot is at 150px
+      if (x >= 135 && x <= 165) {
+        handle.classList.add('slider-passed');
+        handle.textContent = "✓";
+        document.getElementById('slider-status').textContent = "PASSED";
+        document.getElementById('slider-status').className = "status-badge badge-passed";
+        document.getElementById('slider-passed-marker').className = "captcha-passed";
+        document.getElementById('slider-passed-marker').style.display = "inline";
+      }
+    }
+
+    handle.addEventListener('mousedown', function(e) {
+      isDragging = true;
+      startX = e.clientX - handle.offsetLeft;
+    });
+
+    window.addEventListener('mousemove', function(e) {
+      if (!isDragging) return;
+      var newLeft = Math.max(0, Math.min(256, e.clientX - startX));
+      handle.style.left = newLeft + 'px';
+      checkSliderPosition(newLeft);
+    });
+
+    window.addEventListener('mouseup', function() {
+      isDragging = false;
+    });
+  </script>
+</body>
+</html>

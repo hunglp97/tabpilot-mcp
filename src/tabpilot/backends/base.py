@@ -37,6 +37,26 @@ class Capability:
     TRUSTED_INPUT = "trusted_input"
     """Dispatch input events the page cannot tell apart from a real human."""
 
+    FRAME_EVAL = "frame_eval"
+    """Inspect and evaluate JavaScript inside specific frames (including iframes)."""
+
+    DRAG = "drag"
+    """Dispatch trusted drag events (mouse press, move, release)."""
+
+
+@dataclass
+class FrameRef:
+    """Reference to an iframe or frame within a tab."""
+
+    tab_id: str
+    frame_id: str
+    target_id: str | None = None
+    session_id: str | None = None
+    name: str = ""
+    url: str = ""
+    parent_id: str | None = None
+    security_origin: str = ""
+
 
 @dataclass
 class TabInfo:
@@ -125,6 +145,30 @@ class Backend(ABC):
 
     def press_key(self, tab_id: str, key: str, timeout_s: float = 20.0) -> None:
         """Press a single named key (``Enter``, ``Tab``, ``Escape``, arrows)."""
+        raise NotImplementedError
+
+    def list_frames(self, tab_id: str) -> list[FrameRef]:
+        """List all frames (including iframes) currently active in ``tab_id``."""
+        raise NotImplementedError
+
+    def evaluate_in_frame(
+        self, tab_id: str, frame_ref: FrameRef, expression: str, timeout_s: float = 20.0
+    ) -> Any:
+        """Evaluate JavaScript inside a specific frame."""
+        raise NotImplementedError
+
+    def drag(
+        self,
+        tab_id: str,
+        from_x: float,
+        from_y: float,
+        to_x: float,
+        to_y: float,
+        steps: int = 10,
+        duration_s: float = 0.5,
+        timeout_s: float = 20.0,
+    ) -> None:
+        """Dispatch a trusted mouse drag from start coordinates to end coordinates."""
         raise NotImplementedError
 
     def describe(self) -> str:

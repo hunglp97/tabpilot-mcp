@@ -191,7 +191,11 @@ TabPilot is engineered to run permanently on cloud VPS servers (AWS, Hetzner, Di
 
 ## 🧰 Tools & Resources Reference
 
-TabPilot exposes **17 tools** and **2 live resources**:
+TabPilot exposes **19 tools** and **2 live resources**:
+
+### 🛡️ CAPTCHA Detection & Solving
+- **`detect_captcha(url_pattern, tab_id)`**: Structured, zero-side-effect detection of CAPTCHAs (Cloudflare Turnstile/Interstitial, reCAPTCHA v2/Enterprise, hCaptcha, image grids, text captchas, and slider puzzles) with confidence scores, candidate IDs, and available strategies.
+- **`solve_captcha(tab_id, url_pattern, operation, candidate_id, solve_id, observation_id, action_id, action, strategy, agent_vision, timeout_ms, max_attempts, max_rounds, expected, activate_on_fail)`**: Multi-step stateful solver supporting automated checkbox solvers, passive wait, and interactive Agent Vision observation-action loops (`select_tile`, `drag`, `type_answer`, `verify`) with postcondition access verification and token freshness checks.
 
 ### 🔍 Reading & DOM Inspection
 - **`query_dom(selector, attrs, limit, visible_only)`**: Atomic element inspection (~18 tokens). Checks disabled, checked, values.

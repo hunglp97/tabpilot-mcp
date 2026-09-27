@@ -55,6 +55,38 @@ class ElementNotFoundError(TabPilotError):
     code = "ELEMENT_NOT_FOUND"
 
 
+class DisabledError(TabPilotError):
+    code = "DISABLED"
+
+
+class MissingDepError(TabPilotError):
+    code = "MISSING_DEP"
+
+
+class ModelNotReadyError(TabPilotError):
+    code = "MODEL_NOT_READY"
+
+
+class CaptchaBusyError(TabPilotError):
+    code = "CAPTCHA_BUSY"
+
+
+class SolveExpiredError(TabPilotError):
+    code = "SOLVE_EXPIRED"
+
+
+class StrategyIncompatibleError(TabPilotError):
+    code = "STRATEGY_INCOMPATIBLE"
+
+
+class ImageOutputUnavailableError(TabPilotError):
+    code = "IMAGE_OUTPUT_UNAVAILABLE"
+
+
+class ActionOutcomeUnknownError(TabPilotError):
+    code = "ACTION_OUTCOME_UNKNOWN"
+
+
 def chrome_binary_candidates() -> list[str]:
     """Chrome/Chromium executable names, most-preferred first."""
     system = platform.system()

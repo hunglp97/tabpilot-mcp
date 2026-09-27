@@ -53,6 +53,7 @@ class FakeBackend(Backend):
         self.capabilities = capabilities if capabilities is not None else frozenset({
             Capability.EVAL, Capability.NAVIGATE, Capability.OPEN_CLOSE,
             Capability.ACTIVATE, Capability.SCREENSHOT, Capability.TRUSTED_INPUT,
+            Capability.FRAME_EVAL, Capability.DRAG,
         })
         self.calls: list[tuple[str, Any]] = []
         self.screenshot_bytes = b"\x89PNG\r\n\x1a\nfake"
@@ -113,6 +114,29 @@ class FakeBackend(Backend):
 
     def press_key(self, tab_id: str, key: str, timeout_s: float = 20.0) -> None:
         self.calls.append(("press_key", key))
+
+    def list_frames(self, tab_id: str) -> list[Any]:
+        self.calls.append(("list_frames", tab_id))
+        return self.responses.get("list_frames", [])
+
+    def evaluate_in_frame(
+        self, tab_id: str, frame_ref: Any, expression: str, timeout_s: float = 20.0
+    ) -> Any:
+        self.calls.append(("evaluate_in_frame", (frame_ref, expression)))
+        return self.eval_js(tab_id, expression, timeout_s)
+
+    def drag(
+        self,
+        tab_id: str,
+        from_x: float,
+        from_y: float,
+        to_x: float,
+        to_y: float,
+        steps: int = 10,
+        duration_s: float = 0.5,
+        timeout_s: float = 20.0,
+    ) -> None:
+        self.calls.append(("drag", (round(from_x), round(from_y), round(to_x), round(to_y))))
 
     # --- assertions ----------------------------------------------------------
 

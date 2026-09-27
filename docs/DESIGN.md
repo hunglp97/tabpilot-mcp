@@ -60,9 +60,13 @@ Linux, so runs on a server reported success and produced no evidence at all.
 server.py        MCP tools and resources; turns errors into readable text
   ├── extract.py    read_tab, query_dom
   ├── interact.py   click, fill, select_option, fill_matrix, wait_for
-  └── evidence.py   screenshot
+  ├── evidence.py   screenshot
+  └── captcha.py    detect_captcha, solve_captcha (start, observe, act, cancel)
+        ├── captcha_state.py    candidates, observations, sessions, action receipts
+        ├── captcha_verify.py   token freshness & access postconditions
+        └── captcha_solvers/    passive_wait, checkbox, agent_vision
         │
-     session.py   one backend, lazily connected; unwraps payload envelopes
+     session.py   one backend, lazily connected; lease locks; unwraps envelopes
         │
      tabs.py      loose tab reference -> one concrete tab
         │
@@ -70,7 +74,7 @@ server.py        MCP tools and resources; turns errors into readable text
         │
    backends/_ws.py   RFC 6455 client, stdlib only
         │
-   js/*.js        the payloads that actually run in the page
+   js/*.js        the payloads that actually run in the page (captcha_detect.js, etc.)
 ```
 
 Two rules keep this honest.
@@ -244,6 +248,7 @@ until the client reconnects.
 |:--|:--|:--|
 | Config, tabs, payloads, escaping | pure unit | no I/O to speak of |
 | extract, interact, evidence | `FakeBackend` | asserts *call sequences* — that `fill_matrix` makes one click call per row, that `select_option_ui` clicks, waits, then clicks |
+| CAPTCHA state & solvers | unit + live CDP | verifies candidate schema, lease serialization, idempotent receipts, token freshness hashing, and live CDP solving of Turnstile, reCAPTCHA, image grids, text captchas, and slider puzzles |
 | WebSocket client | real loopback server | framing bugs hang rather than raise; a mock would prove nothing |
 | systemd units | rendered and inspected | catches an unset variable a unit references, which would expand to an empty string and silently launch Chrome with no profile |
 | Everything, end to end | real Chrome, real CDP, `-m live` | the only way to know the JavaScript payloads work; it is what found both races above |
