@@ -419,15 +419,19 @@ class CDPBackend(Backend):
                             child_frame_id = c_frame.get("id")
                         if c_frame.get("url"):
                             t_url = c_frame.get("url")
+                        if c_frame.get("name"):
+                            target_info["name"] = c_frame.get("name")
                     except Exception:
                         pass
 
-                existing = next((f for f in frames if f.frame_id == child_frame_id or (t_url and f.url == t_url)), None)
+                existing = next((f for f in frames if f.frame_id == child_frame_id or (f.target_id and f.target_id == tid)), None)
                 if existing:
                     existing.session_id = sess_id
                     existing.target_id = tid
                     if t_url:
                         existing.url = t_url
+                    if target_info.get("name"):
+                        existing.name = target_info.get("name")
                 else:
                     frames.append(
                         FrameRef(
@@ -435,7 +439,7 @@ class CDPBackend(Backend):
                             frame_id=child_frame_id,
                             target_id=tid,
                             session_id=sess_id,
-                            name=target_info.get("title", ""),
+                            name=target_info.get("name") or target_info.get("title", ""),
                             url=t_url,
                             parent_id=root_id,
                             security_origin=target_info.get("url", ""),
@@ -447,8 +451,19 @@ class CDPBackend(Backend):
         return frames
 
     def evaluate_in_frame(
-        self, tab_id: str, frame_ref: FrameRef, expression: str, timeout_s: float = 20.0
+        self, tab_id: str, frame_ref: FrameRef | dict[str, Any], expression: str, timeout_s: float = 20.0
     ) -> Any:
+        if isinstance(frame_ref, dict):
+            frame_ref = FrameRef(
+                tab_id=frame_ref.get("tab_id", tab_id),
+                frame_id=frame_ref.get("frame_id", ""),
+                target_id=frame_ref.get("target_id"),
+                session_id=frame_ref.get("session_id"),
+                name=frame_ref.get("name", ""),
+                url=frame_ref.get("url", ""),
+                parent_id=frame_ref.get("parent_id"),
+                security_origin=frame_ref.get("security_origin", ""),
+            )
         if frame_ref.session_id:
             result = self._command(
                 tab_id,

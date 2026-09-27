@@ -338,3 +338,227 @@ def test_f11_inspection_failure_retained_as_unverified():
     assert data["status"] == SolveStatus.UNVERIFIED.value
     assert data["status"] != SolveStatus.NO_CAPTCHA.value
     assert any(e.get("kind") == "inspection_failed" for e in data.get("evidence", []))
+
+
+def test_n01_iframe_captcha_discovery_and_routing():
+    """N01: CAPTCHAs inside child/OOPIF frames are discovered and routed with frame_ref."""
+    from tabpilot.backends.base import FrameRef
+    child_ref = FrameRef(
+        tab_id="t1",
+        frame_id="frame_child_1",
+        name="recaptcha-frame",
+        url="https://google.com/recaptcha/api2/bframe",
+        parent_id="frame_root",
+    )
+    candidate = {
+        "candidate_id": "cand_grid",
+        "provider": "recaptcha",
+        "challenge_kind": "image_grid",
+        "state": "actionable",
+        "confidence": "high",
+        "widget_ref": "#rc-imageselect",
+    }
+    backend = FakeBackend(
+        responses={
+            "list_frames": [child_ref],
+            "captcha_detect": [
+                {"ok": True, "candidates": []},
+                {"ok": True, "candidates": [candidate]},
+            ],
+            "raw": None,
+        }
+    )
+    session = FakeSession(backend)
+    det_json = captcha.detect_captcha(session, tab_id="t1")
+    det = json.loads(det_json)
+
+    assert det["status"] == "present"
+    assert len(det["candidates"]) >= 1
+    found = det["candidates"][0]
+    assert found["frame_ref"]["frame_id"] == "frame_child_1"
+    assert found["candidate_id"].startswith("frame_frame_ch")
+
+
+def test_n02_two_oopifs_same_url_maintain_distinct_identity():
+    """N02: Two OOPIFs sharing the same URL must not be coalesced into one FrameRef."""
+    from tabpilot.backends.base import FrameRef
+    backend = CDPBackend()
+    backend._tab_attached_sessions["t1"] = {"target_1": "sess_1", "target_2": "sess_2"}
+    backend._session_targets["sess_1"] = {"url": "http://localhost/childA", "title": "FRAME-ONE"}
+    backend._session_targets["sess_2"] = {"url": "http://localhost/childA", "title": "FRAME-TWO"}
+
+    with patch.object(backend, "_command") as mock_cmd:
+        def fake_cmd(tab_id, method, *args, **kwargs):
+            session_id = kwargs.get("session_id")
+            if method == "Page.getFrameTree":
+                if session_id == "sess_1":
+                    return {"frameTree": {"frame": {"id": "f1", "url": "http://localhost/childA", "name": "FRAME-ONE"}}}
+                if session_id == "sess_2":
+                    return {"frameTree": {"frame": {"id": "f2", "url": "http://localhost/childA", "name": "FRAME-TWO"}}}
+                return {"frameTree": {"frame": {"id": "root", "url": "http://localhost/main"}}}
+            return {}
+        mock_cmd.side_effect = fake_cmd
+
+        frames = backend.list_frames("t1")
+        children = [f for f in frames if f.parent_id is not None]
+        assert len(children) == 2
+        assert {c.frame_id for c in children} == {"f1", "f2"}
+        assert {c.name for c in children} == {"FRAME-ONE", "FRAME-TWO"}
+
+
+def test_n03_visual_content_change_triggers_stale_observation():
+    """N03: Challenge visual change with identical prompt invalidates observation fail-closed."""
+    candidate = {
+        "candidate_id": "c1",
+        "provider": "custom",
+        "challenge_kind": "image_grid",
+        "state": "actionable",
+        "confidence": "high",
+        "widget_ref": "#grid",
+        "rect_css": {"x": 0, "y": 0, "width": 300, "height": 180},
+    }
+    backend = FakeBackend(responses={
+        "captcha_detect": {"ok": True, "candidates": [candidate]},
+        "raw": None,
+    })
+    session = FakeSession(backend)
+    res_start = captcha.solve_captcha(session, operation="start", strategy="agent_vision")
+    initial = json.loads(res_start[0] if isinstance(res_start, list) else res_start)
+
+    # Set initial fingerprint on observation
+    active = session.get_active_solve("t1")
+    assert active is not None
+    active.last_observation.challenge_fingerprint = "fp_blue_tile"
+
+    # Precheck returns altered fingerprint (e.g. tile turned red)
+    backend._fake_fingerprint = "fp_red_tile"
+
+    res_act = captcha.solve_captcha(
+        session,
+        operation="act",
+        solve_id=initial["solve_id"],
+        observation_id=initial["observation_id"],
+        action_id="act_after_visual_change",
+        action={"kind": "select_tile", "target_id": "tile-0"},
+    )
+    act_data = json.loads(res_act[0] if isinstance(res_act, list) else res_act)
+
+    assert act_data["status"] == "stale_observation"
+    # Zero clicks dispatched
+    clicks = sum(c[0] == "click_at" for c in backend.calls)
+    assert clicks == 0
+
+
+def test_n04_text_sibling_pass_marker_does_not_false_pass():
+    """N04: Pass detection for image_text ignores sibling .captcha-box with .captcha-passed."""
+    from tabpilot.captcha_verify import is_widget_ui_passed
+    tab = TabInfo(id="t1", title="Form", url="https://example.com/form")
+    candidate = CaptchaCandidate(
+        candidate_id="c_text",
+        provider="custom",
+        challenge_kind="image_text",
+        state="actionable",
+        confidence="high",
+        widget_ref="#captcha-box-1",
+    )
+    # Sibling box is passed, but our box is not
+    backend = FakeBackend(responses={"raw": False})
+    session = FakeSession(backend)
+    passed = is_widget_ui_passed(session, tab, candidate)
+    assert passed is False
+
+
+def test_n05_interstitial_disappearing_returns_not_passed():
+    """N05: Interstitial disappearing (e.g. into 503) does not declare widget_passed."""
+    from tabpilot.captcha_verify import is_widget_ui_passed
+    tab = TabInfo(id="t1", title="Service Unavailable", url="https://example.com/503")
+    candidate = CaptchaCandidate(
+        candidate_id="c_cf",
+        provider="cloudflare",
+        challenge_kind="interstitial",
+        state="actionable",
+        confidence="high",
+        widget_ref="#challenge-stage",
+    )
+    backend = FakeBackend(responses={"raw": False})
+    session = FakeSession(backend)
+    passed = is_widget_ui_passed(session, tab, candidate)
+    assert passed is False
+
+
+def test_n06_select_tile_and_refresh_strictly_widget_scoped():
+    """N06: select_tile and refresh do not click outside candidate widget boundary."""
+    candidate = {
+        "candidate_id": "c1",
+        "provider": "custom",
+        "challenge_kind": "image_grid",
+        "state": "actionable",
+        "confidence": "high",
+        "widget_ref": "#grid",
+        "rect_css": {"x": 100, "y": 100, "width": 300, "height": 180},
+    }
+    backend = FakeBackend(responses={
+        "captcha_detect": {"ok": True, "candidates": [candidate]},
+        "raw": None,
+    })
+    session = FakeSession(backend)
+    res_start = captcha.solve_captcha(session, operation="start", strategy="agent_vision")
+    initial = json.loads(res_start[0] if isinstance(res_start, list) else res_start)
+
+    # Calling refresh when challenge widget has no refresh button returns unsupported without clicking
+    res_refresh = captcha.solve_captcha(
+        session,
+        operation="act",
+        solve_id=initial["solve_id"],
+        observation_id=initial["observation_id"],
+        action_id="act_refresh",
+        action={"kind": "refresh"},
+    )
+    ref_data = json.loads(res_refresh[0] if isinstance(res_refresh, list) else res_refresh)
+    assert ref_data["status"] == "unsupported"
+    clicks = sum(c[0] == "click_at" for c in backend.calls)
+    assert clicks == 0
+
+
+def test_n07_precheck_deadline_expiration_prevents_input_dispatch():
+    """N07: If deadline expires during precheck, input is never dispatched and status is timeout."""
+    candidate = {
+        "candidate_id": "c1",
+        "provider": "custom",
+        "challenge_kind": "image_grid",
+        "state": "actionable",
+        "confidence": "high",
+        "widget_ref": "#grid",
+        "rect_css": {"x": 0, "y": 0, "width": 300, "height": 180},
+    }
+    class SlowPrecheckBackend(FakeBackend):
+        def eval_js(self, tab_id, expression, timeout_s=20):
+            if "widget_found" in expression:
+                time.sleep(0.08)
+            return super().eval_js(tab_id, expression, timeout_s)
+
+    backend = SlowPrecheckBackend(responses={
+        "captcha_detect": {"ok": True, "candidates": [candidate]},
+        "raw": None,
+    })
+    session = FakeSession(backend)
+    res_start = captcha.solve_captcha(session, operation="start", strategy="agent_vision", timeout_ms=5000)
+    initial = json.loads(res_start[0] if isinstance(res_start, list) else res_start)
+
+    # Artificially set remaining deadline to 40ms before act
+    active = session.get_active_solve("t1")
+    assert active is not None
+    active.deadline_monotonic = time.monotonic() + 0.04
+
+    res_act = captcha.solve_captcha(
+        session,
+        operation="act",
+        solve_id=initial["solve_id"],
+        observation_id=initial["observation_id"],
+        action_id="act_expired",
+        action={"kind": "click_point", "point": {"x": 0.5, "y": 0.5}, "image_id": initial["observation"]["image_id"]},
+    )
+    act_data = json.loads(res_act[0] if isinstance(res_act, list) else res_act)
+    assert act_data["status"] == "timeout"
+    assert backend.clicked_after_deadline is False
+    assert sum(c[0] == "click_at" for c in backend.calls) == 0

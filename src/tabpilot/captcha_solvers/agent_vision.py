@@ -169,6 +169,7 @@ class AgentVisionSolver(CaptchaSolverAdapter):
             tiles=layout.get("tiles", []),
             controls=layout.get("controls", []),
             dynamic_grid=layout.get("dynamic_grid", False),
+            challenge_fingerprint=layout.get("fingerprint", ""),
         )
 
         solve_session.last_observation = obs
@@ -243,25 +244,69 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                     detail=f"Image ID mismatch or missing (expected {obs.image_id!r}, got {action.image_id!r}). New observation required.",
                 )
 
-        # Check if document has changed, prompt changed, or candidate widget is missing before dispatching input
+        # Check if document has changed, prompt changed, content changed, or candidate widget is missing before dispatching input
         doc_check_expr = f"""(function() {{
             var wRef = {json.dumps(solve_session.candidate.widget_ref)};
             var specificEl = wRef ? document.querySelector(wRef) : null;
             var container = specificEl ? (specificEl.closest('.challenge-section, form, .captcha-container, .recaptcha-challenge, .captcha-box, .captcha-slider') || specificEl) : null;
             var el = container || document.querySelector('.recaptcha-challenge, .g-recaptcha, .cf-turnstile, .captcha-box, .captcha-slider, #grid') || specificEl;
 
-            var promptEl = (el ? el.querySelector('.rc-imageselect-desc-no-canonical, .rc-imageselect-instructions, .prompt-text, .challenge-instructions, .captcha-prompt, label[for*="captcha"], h3, strong') : null) ||
-                           document.querySelector('.rc-imageselect-desc-no-canonical, .rc-imageselect-instructions, .prompt-text, .challenge-instructions, .captcha-prompt, label[for*="captcha"], h3, strong');
+            var promptEl = (el ? el.querySelector('.rc-imageselect-desc-no-canonical, .rc-imageselect-instructions, .prompt-text, .challenge-instructions, .captcha-prompt, label[for*="captcha"], h3, strong') : null);
+            if (!promptEl && !el) {{
+                promptEl = document.querySelector('.rc-imageselect-desc-no-canonical, .rc-imageselect-instructions, .prompt-text, .challenge-instructions, .captcha-prompt, label[for*="captcha"], h3, strong');
+            }}
             var prompt = promptEl ? (promptEl.innerText || promptEl.textContent || '').trim() : '';
+
+            function computeFingerprint(node) {{
+                if (!node) return '';
+                var parts = [];
+                try {{
+                    var canvases = node.querySelectorAll('canvas');
+                    for (var i = 0; i < canvases.length; i++) {{
+                        parts.push('c:' + canvases[i].toDataURL());
+                    }}
+                }} catch(e) {{}}
+                try {{
+                    var imgs = node.querySelectorAll('img');
+                    for (var i = 0; i < imgs.length; i++) {{
+                        parts.push('i:' + (imgs[i].src || '') + ':' + imgs[i].naturalWidth + 'x' + imgs[i].naturalHeight);
+                    }}
+                }} catch(e) {{}}
+                var items = node.querySelectorAll('.rc-image-tile-target, .captcha-tile, .grid-tile, [class*="tile"], [role="button"], button, canvas, img');
+                if (items.length === 0) items = node.children;
+                for (var i = 0; i < items.length; i++) {{
+                    var it = items[i];
+                    var style = it.getAttribute('style') || '';
+                    var cls = it.className || '';
+                    var txt = (it.innerText || it.textContent || '').trim();
+                    var bg = '';
+                    try {{
+                        bg = window.getComputedStyle(it).backgroundColor || '';
+                    }} catch(e) {{}}
+                    parts.push('it:' + (it.id || '') + '|' + cls + '|' + style + '|' + bg + '|' + txt);
+                }}
+                var str = parts.join(';');
+                var hash = 5381;
+                for (var j = 0; j < str.length; j++) {{
+                    hash = ((hash << 5) + hash) + str.charCodeAt(j);
+                    hash |= 0;
+                }}
+                return String(hash);
+            }}
 
             return {{
                 doc_id: window.__tabpilot_doc_id || null,
                 widget_found: Boolean(el),
-                prompt: prompt
+                prompt: prompt,
+                fingerprint: computeFingerprint(el)
             }};
         }})()"""
+        rem_s = solve_session.remaining_s
+        precheck_timeout = min(3.0, max(0.001, rem_s))
         try:
-            doc_state = session.backend.eval_js(tab.id, doc_check_expr, timeout_s=3.0)
+            doc_state = self._eval_in_target(
+                session, tab, solve_session.candidate.frame_ref, doc_check_expr, timeout_s=precheck_timeout
+            )
             if not isinstance(doc_state, dict):
                 return SolveResult(
                     status=SolveStatus.STALE_OBSERVATION.value,
@@ -296,6 +341,15 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                     solver=self.name,
                     detail="Challenge prompt changed since observation. New observation required.",
                 )
+            current_fp = doc_state.get("fingerprint", "")
+            if obs.challenge_fingerprint and current_fp and current_fp != obs.challenge_fingerprint:
+                return SolveResult(
+                    status=SolveStatus.STALE_OBSERVATION.value,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    detail="Challenge visual content or tile layout changed since observation. New observation required.",
+                )
         except Exception as exc:
             return SolveResult(
                 status=SolveStatus.STALE_OBSERVATION.value,
@@ -305,6 +359,26 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 detail=f"Document check failed ({exc}). Fail-closed: observation considered stale.",
             )
 
+        # Budget check immediately before dispatching any browser input
+        budget_status = solve_session.check_budgets()
+        if budget_status:
+            solve_session.status = budget_status.value
+            return SolveResult(
+                status=solve_session.status,
+                solve_id=solve_session.solve_id,
+                candidate_id=solve_session.candidate.candidate_id,
+                solver=self.name,
+                attempts=solve_session.attempts,
+                rounds=solve_session.rounds,
+                actions_used=solve_session.actions_used,
+                elapsed_ms=solve_session.elapsed_ms,
+                remaining_ms=solve_session.remaining_ms,
+                evidence=solve_session.evidence,
+                detail=f"Budget limit reached before dispatching input: {budget_status.value}",
+            )
+
+        off_x, off_y = self._get_frame_offset(session, tab, solve_session.candidate.frame_ref)
+
         # --- Dispatch action ---
         if kind == ActionKind.SELECT_TILE.value:
             target_id = action.target_id
@@ -313,10 +387,31 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 if target_id not in allowed_tile_ids:
                     raise ValueError(f"Tile target_id {target_id!r} is not in observation tiles {list(allowed_tile_ids)}")
             expr = f"""(function() {{
-                var t = document.getElementById({json.dumps(target_id)});
-                if (!t && {json.dumps(target_id or '')}.startsWith('tile-')) {{
-                    var idx = parseInt({json.dumps(target_id or '')}.split('-')[1]);
-                    var all = document.querySelectorAll('.rc-image-tile-target, .captcha-tile, .grid-tile');
+                var wRef = {json.dumps(solve_session.candidate.widget_ref)};
+                var specificEl = wRef ? document.querySelector(wRef) : null;
+                var container = specificEl ? (specificEl.closest('.challenge-section, form, .captcha-container, .recaptcha-challenge, .captcha-box, .captcha-slider') || specificEl) : null;
+                var el = container || document.querySelector('.recaptcha-challenge, .g-recaptcha, .cf-turnstile, .captcha-box, .captcha-slider, #grid') || specificEl;
+                if (!el) return null;
+
+                var tid = {json.dumps(target_id or '')};
+                var t = null;
+                if (tid) {{
+                    try {{
+                        t = el.querySelector('#' + CSS.escape(tid));
+                    }} catch(e) {{}}
+                    if (!t) {{
+                        var allWithId = el.querySelectorAll('[id]');
+                        for (var i = 0; i < allWithId.length; i++) {{
+                            if (allWithId[i].id === tid) {{
+                                t = allWithId[i];
+                                break;
+                            }}
+                        }}
+                    }}
+                }}
+                if (!t && tid.startsWith('tile-')) {{
+                    var idx = parseInt(tid.split('-')[1]);
+                    var all = el.querySelectorAll('.rc-image-tile-target, .captcha-tile, .grid-tile');
                     if (all[idx]) t = all[idx];
                 }}
                 if (t) {{
@@ -326,9 +421,32 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 }}
                 return null;
             }})()"""
-            pos = session.backend.eval_js(tab.id, expr, timeout_s=3.0)
+            pos = self._eval_in_target(
+                session, tab, solve_session.candidate.frame_ref, expr, timeout_s=min(3.0, max(0.001, solve_session.remaining_s))
+            )
+            budget_status = solve_session.check_budgets()
+            if budget_status:
+                solve_session.status = budget_status.value
+                return SolveResult(
+                    status=solve_session.status,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    attempts=solve_session.attempts,
+                    rounds=solve_session.rounds,
+                    actions_used=solve_session.actions_used,
+                    elapsed_ms=solve_session.elapsed_ms,
+                    remaining_ms=solve_session.remaining_ms,
+                    evidence=solve_session.evidence,
+                    detail=f"Budget limit reached before dispatching input: {budget_status.value}",
+                )
             if isinstance(pos, dict) and "x" in pos:
-                session.backend.click_at(tab.id, pos["x"], pos["y"], timeout_s=5.0)
+                session.backend.click_at(
+                    tab.id,
+                    pos["x"] + off_x,
+                    pos["y"] + off_y,
+                    timeout_s=min(5.0, max(0.001, solve_session.remaining_s)),
+                )
             else:
                 tile = next((t for t in obs.tiles if t.get("tile_id") == target_id), None)
                 if tile and "rect" in tile:
@@ -346,8 +464,15 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                     click_y = crop_y + row * tile_h + tile_h / 2.0
                 else:
                     raise ValueError(f"Unknown tile target_id: {target_id!r}")
-                session.backend.click_at(tab.id, click_x, click_y, timeout_s=5.0)
-            time.sleep(0.3)
+                session.backend.click_at(
+                    tab.id,
+                    click_x,
+                    click_y,
+                    timeout_s=min(5.0, max(0.001, solve_session.remaining_s)),
+                )
+            sleep_s = min(0.3, max(0.0, solve_session.remaining_s))
+            if sleep_s > 0:
+                time.sleep(sleep_s)
 
         elif kind == ActionKind.CLICK_POINT.value:
             if not action.point:
@@ -370,10 +495,12 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 }}
                 return null;
             }})()"""
-            live_rect = session.backend.eval_js(tab.id, live_expr, timeout_s=3.0)
+            live_rect = self._eval_in_target(
+                session, tab, solve_session.candidate.frame_ref, live_expr, timeout_s=min(3.0, max(0.001, solve_session.remaining_s))
+            )
             if isinstance(live_rect, dict) and "x" in live_rect:
-                vp_x = float(live_rect["x"])
-                vp_y = float(live_rect["y"])
+                vp_x = float(live_rect["x"]) + off_x
+                vp_y = float(live_rect["y"]) + off_y
                 vp_w = float(live_rect["width"])
                 vp_h = float(live_rect["height"])
             else:
@@ -381,8 +508,31 @@ class AgentVisionSolver(CaptchaSolverAdapter):
 
             click_x = vp_x + px * vp_w
             click_y = vp_y + py * vp_h
-            session.backend.click_at(tab.id, click_x, click_y, timeout_s=5.0)
-            time.sleep(0.3)
+            budget_status = solve_session.check_budgets()
+            if budget_status:
+                solve_session.status = budget_status.value
+                return SolveResult(
+                    status=solve_session.status,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    attempts=solve_session.attempts,
+                    rounds=solve_session.rounds,
+                    actions_used=solve_session.actions_used,
+                    elapsed_ms=solve_session.elapsed_ms,
+                    remaining_ms=solve_session.remaining_ms,
+                    evidence=solve_session.evidence,
+                    detail=f"Budget limit reached before dispatching input: {budget_status.value}",
+                )
+            session.backend.click_at(
+                tab.id,
+                click_x,
+                click_y,
+                timeout_s=min(5.0, max(0.001, solve_session.remaining_s)),
+            )
+            sleep_s = min(0.3, max(0.0, solve_session.remaining_s))
+            if sleep_s > 0:
+                time.sleep(sleep_s)
 
         elif kind == ActionKind.TYPE_ANSWER.value:
             if action.text is None:
@@ -408,7 +558,25 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 }}
                 return false;
             }})()"""
-            found = session.backend.eval_js(tab.id, expr, timeout_s=3.0)
+            budget_status = solve_session.check_budgets()
+            if budget_status:
+                solve_session.status = budget_status.value
+                return SolveResult(
+                    status=solve_session.status,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    attempts=solve_session.attempts,
+                    rounds=solve_session.rounds,
+                    actions_used=solve_session.actions_used,
+                    elapsed_ms=solve_session.elapsed_ms,
+                    remaining_ms=solve_session.remaining_ms,
+                    evidence=solve_session.evidence,
+                    detail=f"Budget limit reached before dispatching input: {budget_status.value}",
+                )
+            found = self._eval_in_target(
+                session, tab, solve_session.candidate.frame_ref, expr, timeout_s=min(3.0, max(0.001, solve_session.remaining_s))
+            )
             if not found:
                 return SolveResult(
                     status=SolveStatus.UNSUPPORTED.value,
@@ -417,7 +585,9 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                     solver=self.name,
                     detail="Could not find input element belonging to this CAPTCHA challenge.",
                 )
-            time.sleep(0.3)
+            sleep_s = min(0.3, max(0.0, solve_session.remaining_s))
+            if sleep_s > 0:
+                time.sleep(sleep_s)
 
         elif kind == ActionKind.DRAG.value:
             if not action.point or not action.drag_to:
@@ -442,10 +612,12 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 }}
                 return null;
             }})()"""
-            fresh_crop = session.backend.eval_js(tab.id, expr, timeout_s=3.0)
+            fresh_crop = self._eval_in_target(
+                session, tab, solve_session.candidate.frame_ref, expr, timeout_s=min(3.0, max(0.001, solve_session.remaining_s))
+            )
             if isinstance(fresh_crop, dict) and "x" in fresh_crop:
-                crop_x = float(fresh_crop["x"])
-                crop_y = float(fresh_crop["y"])
+                crop_x = float(fresh_crop["x"]) + off_x
+                crop_y = float(fresh_crop["y"]) + off_y
                 crop_w = float(fresh_crop["width"])
                 crop_h = float(fresh_crop["height"])
 
@@ -453,8 +625,35 @@ class AgentVisionSolver(CaptchaSolverAdapter):
             from_y = crop_y + fy * crop_h
             to_x = crop_x + tx * crop_w
             to_y = crop_y + ty * crop_h
-            session.backend.drag(tab.id, from_x, from_y, to_x, to_y, steps=20, duration_s=0.5, timeout_s=10.0)
-            time.sleep(0.5)
+            budget_status = solve_session.check_budgets()
+            if budget_status:
+                solve_session.status = budget_status.value
+                return SolveResult(
+                    status=solve_session.status,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    attempts=solve_session.attempts,
+                    rounds=solve_session.rounds,
+                    actions_used=solve_session.actions_used,
+                    elapsed_ms=solve_session.elapsed_ms,
+                    remaining_ms=solve_session.remaining_ms,
+                    evidence=solve_session.evidence,
+                    detail=f"Budget limit reached before dispatching input: {budget_status.value}",
+                )
+            session.backend.drag(
+                tab.id,
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                steps=20,
+                duration_s=min(0.5, max(0.05, solve_session.remaining_s)),
+                timeout_s=min(10.0, max(0.001, solve_session.remaining_s)),
+            )
+            sleep_s = min(0.5, max(0.0, solve_session.remaining_s))
+            if sleep_s > 0:
+                time.sleep(sleep_s)
 
         elif kind == ActionKind.VERIFY.value:
             expr = f"""(function() {{
@@ -470,16 +669,44 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 }}
                 return null;
             }})()"""
-            pos = session.backend.eval_js(tab.id, expr, timeout_s=3.0)
+            pos = self._eval_in_target(
+                session, tab, solve_session.candidate.frame_ref, expr, timeout_s=min(3.0, max(0.001, solve_session.remaining_s))
+            )
+            budget_status = solve_session.check_budgets()
+            if budget_status:
+                solve_session.status = budget_status.value
+                return SolveResult(
+                    status=solve_session.status,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    attempts=solve_session.attempts,
+                    rounds=solve_session.rounds,
+                    actions_used=solve_session.actions_used,
+                    elapsed_ms=solve_session.elapsed_ms,
+                    remaining_ms=solve_session.remaining_ms,
+                    evidence=solve_session.evidence,
+                    detail=f"Budget limit reached before dispatching input: {budget_status.value}",
+                )
             if isinstance(pos, dict) and "x" in pos:
-                session.backend.click_at(tab.id, pos["x"], pos["y"], timeout_s=5.0)
+                session.backend.click_at(
+                    tab.id,
+                    pos["x"] + off_x,
+                    pos["y"] + off_y,
+                    timeout_s=min(5.0, max(0.001, solve_session.remaining_s)),
+                )
             else:
                 ctrl = next((c for c in obs.controls if c.get("kind") == "verify"), None)
                 if ctrl and "rect" in ctrl:
                     cr = ctrl["rect"]
                     click_x = crop_x + cr["x"] + cr["width"] / 2.0
                     click_y = crop_y + cr["y"] + cr["height"] / 2.0
-                    session.backend.click_at(tab.id, click_x, click_y, timeout_s=5.0)
+                    session.backend.click_at(
+                        tab.id,
+                        click_x,
+                        click_y,
+                        timeout_s=min(5.0, max(0.001, solve_session.remaining_s)),
+                    )
                 else:
                     return SolveResult(
                         status=SolveStatus.UNSUPPORTED.value,
@@ -489,19 +716,75 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                         detail="Could not locate Verify control for this challenge widget.",
                     )
             solve_session.attempts += 1
-            time.sleep(1.0)
+            sleep_s = min(1.0, max(0.0, solve_session.remaining_s))
+            if sleep_s > 0:
+                time.sleep(sleep_s)
 
         elif kind == ActionKind.REFRESH.value:
-            expr = """(function() {
-                var btn = document.querySelector('#recaptcha-reload-button, .reload-btn, .refresh-btn');
-                if (btn) {
-                    btn.click();
-                    return true;
-                }
-                return false;
-            })()"""
-            session.backend.eval_js(tab.id, expr, timeout_s=3.0)
-            time.sleep(1.0)
+            expr = f"""(function() {{
+                var wRef = {json.dumps(solve_session.candidate.widget_ref)};
+                var specificEl = wRef ? document.querySelector(wRef) : null;
+                var container = specificEl ? (specificEl.closest('.challenge-section, form, .captcha-container, .recaptcha-challenge, .captcha-box, .captcha-slider') || specificEl) : null;
+                var el = container || document.querySelector('.recaptcha-challenge, .g-recaptcha, .cf-turnstile, .captcha-box, .captcha-slider, #grid') || specificEl;
+                if (!el) return null;
+
+                var btn = el.querySelector('#recaptcha-reload-button, .reload-btn, .refresh-btn, button[aria-label*="reload" i], button[aria-label*="refresh" i]');
+                if (btn) {{
+                    btn.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+                    var r = btn.getBoundingClientRect();
+                    return {{ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }};
+                }}
+                return null;
+            }})()"""
+            pos = self._eval_in_target(
+                session, tab, solve_session.candidate.frame_ref, expr, timeout_s=min(3.0, max(0.001, solve_session.remaining_s))
+            )
+            budget_status = solve_session.check_budgets()
+            if budget_status:
+                solve_session.status = budget_status.value
+                return SolveResult(
+                    status=solve_session.status,
+                    solve_id=solve_session.solve_id,
+                    candidate_id=solve_session.candidate.candidate_id,
+                    solver=self.name,
+                    attempts=solve_session.attempts,
+                    rounds=solve_session.rounds,
+                    actions_used=solve_session.actions_used,
+                    elapsed_ms=solve_session.elapsed_ms,
+                    remaining_ms=solve_session.remaining_ms,
+                    evidence=solve_session.evidence,
+                    detail=f"Budget limit reached before dispatching input: {budget_status.value}",
+                )
+            if isinstance(pos, dict) and "x" in pos:
+                session.backend.click_at(
+                    tab.id,
+                    pos["x"] + off_x,
+                    pos["y"] + off_y,
+                    timeout_s=min(5.0, max(0.001, solve_session.remaining_s)),
+                )
+            else:
+                ctrl = next((c for c in obs.controls if c.get("kind") in ("refresh", "reload")), None)
+                if ctrl and "rect" in ctrl:
+                    cr = ctrl["rect"]
+                    click_x = crop_x + cr["x"] + cr["width"] / 2.0
+                    click_y = crop_y + cr["y"] + cr["height"] / 2.0
+                    session.backend.click_at(
+                        tab.id,
+                        click_x,
+                        click_y,
+                        timeout_s=min(5.0, max(0.001, solve_session.remaining_s)),
+                    )
+                else:
+                    return SolveResult(
+                        status=SolveStatus.UNSUPPORTED.value,
+                        solve_id=solve_session.solve_id,
+                        candidate_id=solve_session.candidate.candidate_id,
+                        solver=self.name,
+                        detail="Could not locate Reload/Refresh control for this challenge widget.",
+                    )
+            sleep_s = min(1.0, max(0.0, solve_session.remaining_s))
+            if sleep_s > 0:
+                time.sleep(sleep_s)
 
         else:
             raise ValueError(f"Unsupported action kind: {kind!r}")
@@ -559,10 +842,69 @@ class AgentVisionSolver(CaptchaSolverAdapter):
         # Still needs agent (another round of observation/action)
         return self.solve_step(session, tab, solve_session)
 
+    def _get_frame_offset(
+        self, session: Session, tab: TabInfo, frame_ref: Any
+    ) -> tuple[float, float]:
+        """Get the (x, y) offset of an iframe element within the top-level document."""
+        if not frame_ref:
+            return 0.0, 0.0
+        url = frame_ref.get("url", "") if isinstance(frame_ref, dict) else getattr(frame_ref, "url", "")
+        name = frame_ref.get("name", "") if isinstance(frame_ref, dict) else getattr(frame_ref, "name", "")
+        expr = f"""(function() {{
+            var url = {json.dumps(url)};
+            var name = {json.dumps(name)};
+            var iframes = document.querySelectorAll('iframe');
+            for (var i = 0; i < iframes.length; i++) {{
+                var ifr = iframes[i];
+                var match = false;
+                if (name && (ifr.name === name || ifr.id === name)) match = true;
+                if (!match && url) {{
+                    try {{
+                        var u = new URL(url);
+                        if (ifr.src && (ifr.src === url || ifr.src.indexOf(u.pathname) !== -1)) match = true;
+                    }} catch(e) {{
+                        if (ifr.src && ifr.src.indexOf(url) !== -1) match = true;
+                    }}
+                }}
+                if (match) {{
+                    var r = ifr.getBoundingClientRect();
+                    var sx = window.scrollX || window.pageXOffset || 0;
+                    var sy = window.scrollY || window.pageYOffset || 0;
+                    return {{ x: Math.round(r.left + sx), y: Math.round(r.top + sy) }};
+                }}
+            }}
+            if (iframes.length === 1) {{
+                var r = iframes[0].getBoundingClientRect();
+                var sx = window.scrollX || window.pageXOffset || 0;
+                var sy = window.scrollY || window.pageYOffset || 0;
+                return {{ x: Math.round(r.left + sx), y: Math.round(r.top + sy) }};
+            }}
+            return {{ x: 0, y: 0 }};
+        }})()"""
+        try:
+            res = session.backend.eval_js(tab.id, expr, timeout_s=2.0)
+            if isinstance(res, dict) and "x" in res:
+                return float(res["x"]), float(res["y"])
+        except Exception:
+            pass
+        return 0.0, 0.0
+
+    def _eval_in_target(
+        self,
+        session: Session,
+        tab: TabInfo,
+        frame_ref: Any,
+        expr: str,
+        timeout_s: float = 3.0,
+    ) -> Any:
+        if frame_ref:
+            return session.backend.evaluate_in_frame(tab.id, frame_ref, expr, timeout_s=timeout_s)
+        return session.backend.eval_js(tab.id, expr, timeout_s=timeout_s)
+
     def _inspect_challenge_layout(
         self, session: Session, tab: TabInfo, solve_session: SolveSession
     ) -> dict[str, Any]:
-        """Inspect the challenge element to extract prompt, bounding box, tiles, and controls."""
+        """Inspect the challenge element to extract prompt, bounding box, tiles, controls, and content fingerprint."""
         try:
             expr = f"""(function() {{
                 var candidatePageRect = null;
@@ -573,7 +915,7 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 var specificEl = widgetRef ? document.querySelector(widgetRef) : null;
                 var container = specificEl ? (specificEl.closest('.challenge-section, form, .captcha-container, .recaptcha-challenge, .captcha-box, .captcha-slider') || specificEl) : null;
                 var bframe = document.querySelector('iframe[src*="bframe"], iframe[title*="challenge"], .recaptcha-challenge, .h-captcha-challenge, .captcha-modal, .captcha-container');
-                var el = container || bframe || document.querySelector('.captcha-box, #captcha, [class*="captcha"]');
+                var el = container || bframe || document.querySelector('.captcha-box, #captcha, [class*="captcha"]') || specificEl;
                 if (el) {{
                     var r = el.getBoundingClientRect();
                     candidateViewportRect = {{ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }};
@@ -586,17 +928,17 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                 // Prompt text
                 var promptEl = (el ? el.querySelector(
                     '.rc-imageselect-desc-no-canonical, .rc-imageselect-instructions, .prompt-text, .challenge-instructions, .captcha-prompt, label[for*="captcha"], h3, strong'
-                ) : null) || document.querySelector(
-                    '.rc-imageselect-desc-no-canonical, .rc-imageselect-instructions, .prompt-text, .challenge-instructions, .captcha-prompt, label[for*="captcha"], h3, strong'
-                );
+                ) : null);
+                if (!promptEl && !el) {{
+                    promptEl = document.querySelector(
+                        '.rc-imageselect-desc-no-canonical, .rc-imageselect-instructions, .prompt-text, .challenge-instructions, .captcha-prompt, label[for*="captcha"], h3, strong'
+                    );
+                }}
                 var prompt = promptEl ? (promptEl.innerText || promptEl.textContent || '').trim() : '';
 
-                // Tiles if standard grid
+                // Tiles if standard grid - strictly scoped to el
                 var tiles = [];
                 var tileEls = el ? el.querySelectorAll('.rc-image-tile-target, .captcha-tile, .grid-tile') : [];
-                if (tileEls.length === 0) {{
-                    tileEls = document.querySelectorAll('.rc-image-tile-target, .captcha-tile, .grid-tile');
-                }}
                 if (tileEls.length > 0) {{
                     for (var i = 0; i < tileEls.length; i++) {{
                         var tr = tileEls[i].getBoundingClientRect();
@@ -634,6 +976,52 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                         rect: {{ x: Math.round(vr.left - candidateViewportRect.x), y: Math.round(vr.top - candidateViewportRect.y), width: Math.round(vr.width), height: Math.round(vr.height) }}
                     }});
                 }}
+                var refreshBtn = el ? el.querySelector('#recaptcha-reload-button, .reload-btn, .refresh-btn, button[aria-label*="reload" i], button[aria-label*="refresh" i]') : null;
+                if (refreshBtn && candidateViewportRect) {{
+                    var rr = refreshBtn.getBoundingClientRect();
+                    controls.push({{
+                        kind: 'refresh',
+                        rect: {{ x: Math.round(rr.left - candidateViewportRect.x), y: Math.round(rr.top - candidateViewportRect.y), width: Math.round(rr.width), height: Math.round(rr.height) }}
+                    }});
+                }}
+
+                // Challenge content fingerprint (canvas, images, tiles, styles)
+                function computeFingerprint(node) {{
+                    if (!node) return '';
+                    var parts = [];
+                    try {{
+                        var canvases = node.querySelectorAll('canvas');
+                        for (var i = 0; i < canvases.length; i++) {{
+                            parts.push('c:' + canvases[i].toDataURL());
+                        }}
+                    }} catch(e) {{}}
+                    try {{
+                        var imgs = node.querySelectorAll('img');
+                        for (var i = 0; i < imgs.length; i++) {{
+                            parts.push('i:' + (imgs[i].src || '') + ':' + imgs[i].naturalWidth + 'x' + imgs[i].naturalHeight);
+                        }}
+                    }} catch(e) {{}}
+                    var items = node.querySelectorAll('.rc-image-tile-target, .captcha-tile, .grid-tile, [class*="tile"], [role="button"], button, canvas, img');
+                    if (items.length === 0) items = node.children;
+                    for (var i = 0; i < items.length; i++) {{
+                        var it = items[i];
+                        var style = it.getAttribute('style') || '';
+                        var cls = it.className || '';
+                        var txt = (it.innerText || it.textContent || '').trim();
+                        var bg = '';
+                        try {{
+                            bg = window.getComputedStyle(it).backgroundColor || '';
+                        }} catch(e) {{}}
+                        parts.push('it:' + (it.id || '') + '|' + cls + '|' + style + '|' + bg + '|' + txt);
+                    }}
+                    var str = parts.join(';');
+                    var hash = 5381;
+                    for (var j = 0; j < str.length; j++) {{
+                        hash = ((hash << 5) + hash) + str.charCodeAt(j);
+                        hash |= 0;
+                    }}
+                    return String(hash);
+                }}
 
                 return {{
                     crop_rect: candidatePageRect,
@@ -641,12 +1029,27 @@ class AgentVisionSolver(CaptchaSolverAdapter):
                     prompt: prompt,
                     tiles: tiles,
                     controls: controls,
-                    dynamic_grid: true
+                    dynamic_grid: true,
+                    fingerprint: computeFingerprint(el)
                 }};
             }})()"""
-            res = session.backend.eval_js(tab.id, expr, timeout_s=3.0)
-            if isinstance(res, dict) and res.get("crop_rect"):
-                return res
+            timeout = min(3.0, max(0.001, solve_session.remaining_s))
+            if solve_session.candidate.frame_ref:
+                res = session.backend.evaluate_in_frame(
+                    tab.id, solve_session.candidate.frame_ref, expr, timeout_s=timeout
+                )
+                off_x, off_y = self._get_frame_offset(session, tab, solve_session.candidate.frame_ref)
+                if isinstance(res, dict) and res.get("crop_rect"):
+                    res["crop_rect"]["x"] += off_x
+                    res["crop_rect"]["y"] += off_y
+                    if res.get("viewport_rect"):
+                        res["viewport_rect"]["x"] += off_x
+                        res["viewport_rect"]["y"] += off_y
+                    return res
+            else:
+                res = session.backend.eval_js(tab.id, expr, timeout_s=timeout)
+                if isinstance(res, dict) and res.get("crop_rect"):
+                    return res
         except Exception:
             pass
 
@@ -679,4 +1082,5 @@ class AgentVisionSolver(CaptchaSolverAdapter):
             "tiles": tiles,
             "controls": [],
             "dynamic_grid": False,
+            "fingerprint": "",
         }

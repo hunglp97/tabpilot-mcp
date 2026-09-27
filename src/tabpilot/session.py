@@ -162,6 +162,23 @@ class Session:
             raise _payload_error(name, result)
         return result
 
+    def run_payload_in_frame(
+        self,
+        tab_id: str,
+        frame_ref: Any,
+        name: str,
+        options: dict[str, Any] | None = None,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        """Run a JS payload inside a specific frame and unwrap its ``{ok, ...}`` envelope."""
+        expr = payloads.call(name, options)
+        result = self.backend.evaluate_in_frame(tab_id, frame_ref, expr, timeout_s or self.config.timeout_s)
+        if not isinstance(result, dict):
+            raise JSError(f"Payload {name!r} returned {type(result).__name__}, expected an object.")
+        if not result.get("ok"):
+            raise _payload_error(name, result)
+        return result
+
 
 def _payload_error(name: str, result: dict[str, Any]) -> TabPilotError:
     from .errors import ElementNotFoundError

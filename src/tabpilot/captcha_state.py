@@ -195,6 +195,7 @@ class Observation:
     tiles: list[dict[str, Any]] = field(default_factory=list)
     controls: list[dict[str, Any]] = field(default_factory=list)
     dynamic_grid: bool = False
+    challenge_fingerprint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -319,6 +320,10 @@ class SolveSession:
     def remaining_ms(self) -> int:
         rem = self.deadline_monotonic - time.monotonic()
         return max(0, int(rem * 1000))
+
+    @property
+    def remaining_s(self) -> float:
+        return max(0.0, self.deadline_monotonic - time.monotonic())
 
     @property
     def elapsed_ms(self) -> int:

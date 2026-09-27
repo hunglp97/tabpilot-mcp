@@ -1,0 +1,30 @@
+{
+  "python": "3.14.3",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "browser": "Chrome/154.0.8037.57",
+  "offline_suite": {
+    "passed": 214,
+    "deselected": 53,
+    "duration_s": 4.84
+  },
+  "chrome_fixture_live_suite": {
+    "passed": 53,
+    "deselected": 207,
+    "duration_s": 19.78,
+    "log": "live-suite.txt"
+  },
+  "suite_total_passed": 267,
+  "findings_resolved": {
+    "N01": "passed",
+    "N02": "passed",
+    "N03": "passed",
+    "N04": "passed",
+    "N05": "passed",
+    "N06": "passed",
+    "N07": "passed"
+  },
+  "remaining_findings": {
+    "P1": 0,
+    "P2": 0
+  }
+}

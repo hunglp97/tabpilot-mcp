@@ -28,7 +28,10 @@ def get_token_from_dom(session: Session, tab: TabInfo, candidate: CaptchaCandida
             var el = document.querySelector({json.dumps(candidate.response_field_ref)});
             return el ? (el.value || el.textContent || '') : null;
         }})()"""
-        val = session.backend.eval_js(tab.id, expr, timeout_s=3.0)
+        if candidate.frame_ref:
+            val = session.backend.evaluate_in_frame(tab.id, candidate.frame_ref, expr, timeout_s=3.0)
+        else:
+            val = session.backend.eval_js(tab.id, expr, timeout_s=3.0)
         return str(val) if val else None
     except Exception:
         return None
@@ -47,6 +50,8 @@ def has_widget_error(session: Session, tab: TabInfo, candidate: CaptchaCandidate
                                    (scope.classList && (scope.classList.contains('recaptcha-checkbox-expired') || scope.classList.contains('rc-anchor-error') || scope.classList.contains('cf-turnstile-error')));
             return Boolean(isExpiredOrError);
         }})()"""
+        if candidate.frame_ref:
+            return bool(session.backend.evaluate_in_frame(tab.id, candidate.frame_ref, expr, timeout_s=3.0))
         return bool(session.backend.eval_js(tab.id, expr, timeout_s=3.0))
     except Exception:
         return False
@@ -67,20 +72,8 @@ def is_widget_ui_passed(session: Session, tab: TabInfo, candidate: CaptchaCandid
 
             if (!root) {{
                 if (prov === 'cloudflare' && kind === 'interstitial') {{
-                    var cfStage = document.getElementById('challenge-stage') ||
-                                  document.getElementById('challenge-running') ||
-                                  document.getElementById('cf-challenge-running');
-                    var cfTitle = (document.title || '').indexOf('Just a moment...') !== -1;
-                    var titleLower = (document.title || '').toLowerCase();
-                    var bodyText = document.body ? (document.body.innerText || document.body.textContent || '').toLowerCase() : '';
-                    var isBlockedOrError = titleLower.indexOf('access denied') !== -1 ||
-                                           titleLower.indexOf('attention required') !== -1 ||
-                                           titleLower.indexOf('error') !== -1 ||
-                                           bodyText.indexOf('403 access denied') !== -1 ||
-                                           bodyText.indexOf('access denied') !== -1 ||
-                                           bodyText.indexOf('error 403') !== -1;
-                    if (isBlockedOrError) return false;
-                    return !cfStage && !cfTitle && Boolean(document.body && document.body.children.length > 0);
+                    // Interstitial has no widget; resolution is proven by access postconditions, not absence of markers
+                    return false;
                 }}
                 return false;
             }}
@@ -118,12 +111,19 @@ def is_widget_ui_passed(session: Session, tab: TabInfo, candidate: CaptchaCandid
                 if (root.classList.contains('captcha-passed') || root.classList.contains('slider-passed')) return true;
                 if (root.querySelector('.captcha-passed, .slider-passed')) return true;
                 if (kind === 'image_text') {{
-                    var textContainer = root.closest('form, .challenge-section') || root.closest('.captcha-box') || root;
-                    if (textContainer.querySelector('.captcha-passed, .badge-passed, #text-status.badge-passed')) return true;
+                    var box = root.closest('.captcha-box') || root;
+                    if (box.classList && box.classList.contains('captcha-passed')) return true;
+                    if (box.querySelector && box.querySelector('.captcha-passed')) return true;
+                    var sib = box.nextElementSibling;
+                    if (sib && sib.classList && sib.classList.contains('captcha-passed') && !sib.classList.contains('captcha-box') && !sib.querySelector('.captcha-box, canvas, input')) {{
+                        return true;
+                    }}
                 }}
             }}
             return false;
         }})()"""
+        if candidate.frame_ref:
+            return bool(session.backend.evaluate_in_frame(tab.id, candidate.frame_ref, expr, timeout_s=3.0))
         return bool(session.backend.eval_js(tab.id, expr, timeout_s=3.0))
     except Exception:
         return False

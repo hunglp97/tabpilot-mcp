@@ -92,10 +92,40 @@ def detect_captcha(
     raw_candidates = raw_res.get("candidates", []) if isinstance(raw_res, dict) else []
     candidates: list[CaptchaCandidate] = []
     selected_id: str | None = None
+    limitations: list[str] = []
+    coverage = DetectionCoverage.TOP_DOCUMENT.value
 
     for item in raw_candidates:
         c = CaptchaCandidate.from_dict(item)
         candidates.append(c)
+
+    # Inspect child frames if backend supports frame listing / eval
+    if session.backend.supports(Capability.FRAME_EVAL) or session.backend.supports(Capability.EVAL):
+        try:
+            frames = session.backend.list_frames(tab.id)
+            child_frames = [f for f in frames if f.parent_id is not None]
+            if child_frames:
+                coverage = DetectionCoverage.FRAMES.value
+                for cf in child_frames:
+                    try:
+                        child_res = session.run_payload_in_frame(tab.id, cf, "captcha_detect")
+                        if isinstance(child_res, dict) and child_res.get("ok"):
+                            for item in child_res.get("candidates", []):
+                                item["frame_ref"] = {
+                                    "frame_id": cf.frame_id,
+                                    "target_id": cf.target_id,
+                                    "session_id": cf.session_id,
+                                    "url": cf.url,
+                                    "name": cf.name,
+                                }
+                                if not item.get("candidate_id", "").startswith("frame_"):
+                                    item["candidate_id"] = f"frame_{cf.frame_id[:8]}_{item.get('candidate_id')}"
+                                candidates.append(CaptchaCandidate.from_dict(item))
+                    except Exception as exc:
+                        limitations.append(f"Failed to inspect frame {cf.frame_id}: {exc}")
+                        coverage = DetectionCoverage.PARTIAL.value
+        except Exception as exc:
+            limitations.append(f"Failed to list frames: {exc}")
 
     if not candidates:
         status = DetectionStatus.ABSENT.value
@@ -113,10 +143,10 @@ def detect_captcha(
         status=status,
         tab_id=tab.id,
         document_generation=doc_generation,
-        coverage=DetectionCoverage.TOP_DOCUMENT.value,
+        coverage=coverage,
         candidates=candidates,
         selected_candidate_id=selected_id,
-        limitations=[],
+        limitations=limitations,
     )
     return result.to_json()
 

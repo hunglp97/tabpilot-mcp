@@ -57,6 +57,7 @@ class FakeBackend(Backend):
         })
         self.calls: list[tuple[str, Any]] = []
         self.screenshot_bytes = b"\x89PNG\r\n\x1a\nfake"
+        self.clicked_after_deadline: bool = False
 
     # --- plumbing ------------------------------------------------------------
 
@@ -78,10 +79,10 @@ class FakeBackend(Backend):
                     if not hasattr(self, "_fake_doc_id"):
                         self._fake_doc_id = "doc_fake_123"
                     if "widget_found" in expression:
-                        return {"doc_id": self._fake_doc_id, "widget_found": True, "prompt": ""}
+                        return {"doc_id": self._fake_doc_id, "widget_found": True, "prompt": "", "fingerprint": getattr(self, "_fake_fingerprint", "fp_fake_123")}
                     return self._fake_doc_id
                 if "widget_found" in expression:
-                    return {"doc_id": getattr(self, "_fake_doc_id", "doc_fake_123"), "widget_found": True, "prompt": ""}
+                    return {"doc_id": getattr(self, "_fake_doc_id", "doc_fake_123"), "widget_found": True, "prompt": "", "fingerprint": getattr(self, "_fake_fingerprint", "fp_fake_123")}
             return raw
 
         programmed = self.responses.get(name)
